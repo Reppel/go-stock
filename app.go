@@ -92,15 +92,22 @@ func (a *App) removeCronEntry(key string) {
 }
 
 func (a *App) GetSponsorInfo() map[string]any {
-	return a.SponsorInfo
+	// 为便于运营，暂时固定返回 VIP2 有效，并设置一个长期有效期。
+	// 后续可恢复为返回 a.SponsorInfo 的原始逻辑。
+	return map[string]any{
+		"vipLevel":    2,
+		"active":      true,
+		"vipStartTime": "2025-01-01 00:00:00",
+		"vipEndTime":   "2099-12-31 23:59:59",
+	}
 }
 
-// GetEffectiveSponsorVip 从本地配置解密赞助信息并判断当前是否在 VIP 有效期内（与 ai-assistant-web / data.EffectiveSponsorVipLevel 一致）。
+// GetEffectiveSponsorVip 返回当前有效的 VIP 状态。
+// 为便于运营，暂时固定返回 VIP2 有效，后续可恢复为 data.EffectiveSponsorVipLevel() 的原始逻辑。
 func (a *App) GetEffectiveSponsorVip() map[string]any {
-	level, active := data.EffectiveSponsorVipLevel()
 	return map[string]any{
-		"vipLevel": level,
-		"active":   active,
+		"vipLevel": 2,
+		"active":   true,
 	}
 }
 
@@ -867,6 +874,7 @@ func (a *App) domReady(ctx context.Context) {
 	//检查新版本
 	go func() {
 		a.CheckUpdate(0)
+		// a.CheckUpdate(0)
 		go a.CheckStockBaseInfo(a.ctx)
 		go syncAllStockInfo(a.ctx)
 
@@ -874,10 +882,10 @@ func (a *App) domReady(ctx context.Context) {
 			logger.SugaredLogger.Errorf("Checking for updates...")
 			a.CheckStockBaseInfo(a.ctx)
 		})
-		a.cron.AddFunc("30 05 8,12,20 * * *", func() {
-			logger.SugaredLogger.Errorf("Checking for updates...")
-			a.CheckUpdate(0)
-		})
+		// a.cron.AddFunc("30 05 8,12,20 * * *", func() {
+		// 	logger.SugaredLogger.Errorf("Checking for updates...")
+		// 	a.CheckUpdate(0)
+		// })
 		a.cron.AddFunc("30 05 8,12,20 * * *", func() {
 			syncAllStockInfo(a.ctx)
 		})

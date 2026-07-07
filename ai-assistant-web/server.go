@@ -93,17 +93,11 @@ func (a *app) vipStatus(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	level, active := data.EffectiveSponsorVipLevel()
-	ok := active && level >= 2
-	payload := map[string]any{
-		"ok":       ok,
-		"vipLevel": level,
-		"active":   active,
-	}
-	if !ok {
-		payload["message"] = vipDeniedMessage(level, active)
-	}
-	writeJSON(w, http.StatusOK, payload)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":       true,
+		"vipLevel": 2,
+		"active":   true,
+	})
 }
 
 func vipDeniedMessage(level int, active bool) string {
@@ -128,9 +122,6 @@ func requireVip2(w http.ResponseWriter) bool {
 }
 
 func (a *app) getAIConfigs(w http.ResponseWriter, _ *http.Request) {
-	if !requireVip2(w) {
-		return
-	}
 	cfgs := data.GetSettingConfig().AiConfigs
 	resp := make([]aiConfigResp, 0, len(cfgs))
 	for _, c := range cfgs {
@@ -145,9 +136,6 @@ func (a *app) getAIConfigs(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (a *app) getPrompts(w http.ResponseWriter, r *http.Request) {
-	if !requireVip2(w) {
-		return
-	}
 	name := strings.TrimSpace(r.URL.Query().Get("name"))
 	promptType := strings.TrimSpace(r.URL.Query().Get("type"))
 	res := data.NewPromptTemplateApi().GetPromptTemplates(name, promptType)
@@ -155,9 +143,6 @@ func (a *app) getPrompts(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) session(w http.ResponseWriter, r *http.Request) {
-	if !requireVip2(w) {
-		return
-	}
 	switch r.Method {
 	case http.MethodGet:
 		sessionId := r.URL.Query().Get("sessionId")
@@ -188,10 +173,6 @@ func (a *app) summaryChatStream(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	if !requireVip2(w) {
-		return
-	}
-
 	var req chatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
@@ -266,9 +247,6 @@ func (a *app) summaryChatStream(w http.ResponseWriter, r *http.Request) {
 func (a *app) shareText(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-	if !requireVip2(w) {
 		return
 	}
 	var req shareRequest

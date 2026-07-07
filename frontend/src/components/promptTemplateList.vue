@@ -120,6 +120,7 @@ const columnsRef = ref([
           },
           { default: () => '编辑' }
         ),
+        /*
         h(
           NButton,
           {
@@ -130,6 +131,7 @@ const columnsRef = ref([
           },
           { default: () => '分享' }
         ),
+        */
         h(
           NButton,
           {

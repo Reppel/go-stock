@@ -1,4 +1,4 @@
-<script setup>
+﻿<script setup>
 import {computed, h, nextTick, onBeforeMount, onBeforeUnmount, onMounted, reactive, ref, watch} from 'vue'
 import * as echarts from 'echarts';
 import {
@@ -645,84 +645,84 @@ onBeforeMount(() => {
   })
 
 
-  EventsOn("updateVersion", async (msg) => {
-    const githubTimeStr = msg.published_at;
-    const utcDate = new Date(githubTimeStr);
-    const date = new Date(utcDate.getTime());
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    const hours = String(date.getHours()).padStart(2, '0');
-    const minutes = String(date.getMinutes()).padStart(2, '0');
-    const seconds = String(date.getSeconds()).padStart(2, '0');
-    const formattedDate = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
-    notify.info({
-      avatar: () =>
-          h(NAvatar, {
-            size: 'small',
-            round: false,
-            src: icon.value
-          }),
-      title: '发现新版本: ' + msg.tag_name,
-      content: () => {
-        return h('div', {
-          style: {
-            'text-align': 'left',
-            'font-size': '14px',
-          }
-        }, {default: () => msg.commit?.message})
-      },
-      duration: 5000,
-      meta: "发布时间:" + formattedDate,
-      action: () => {
-        return h(NButton, {
-          type: 'primary',
-          size: 'small',
-          onClick: () => {
-            Environment().then(env => {
-              switch (env.platform) {
-                case 'windows':
-                  window.open(msg.html_url)
-                  break
-                default :
-                  OpenURL(msg.html_url)
-              }
-            })
-          }
-        }, {default: () => '查看'})
-      }
-    })
-  })
+  // EventsOn("updateVersion", async (msg) => {
+  //   const githubTimeStr = msg.published_at;
+  //   const utcDate = new Date(githubTimeStr);
+  //   const date = new Date(utcDate.getTime());
+  //   const year = date.getFullYear();
+  //   const month = String(date.getMonth() + 1).padStart(2, '0');
+  //   const day = String(date.getDate()).padStart(2, '0');
+  //   const hours = String(date.getHours()).padStart(2, '0');
+  //   const minutes = String(date.getMinutes()).padStart(2, '0');
+  //   const seconds = String(date.getSeconds()).padStart(2, '0');
+  //   const formattedDate = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+  //   notify.info({
+  //     avatar: () =>
+  //         h(NAvatar, {
+  //           size: 'small',
+  //           round: false,
+  //           src: icon.value
+  //         }),
+  //     title: '发现新版本: ' + msg.tag_name,
+  //     content: () => {
+  //       return h('div', {
+  //         style: {
+  //           'text-align': 'left',
+  //           'font-size': '14px',
+  //         }
+  //       }, {default: () => msg.commit?.message})
+  //     },
+  //     duration: 5000,
+  //     meta: "发布时间:" + formattedDate,
+  //     action: () => {
+  //       return h(NButton, {
+  //         type: 'primary',
+  //         size: 'small',
+  //         onClick: () => {
+  //           Environment().then(env => {
+  //             switch (env.platform) {
+  //               case 'windows':
+  //                 window.open(msg.html_url)
+  //                 break
+  //               default :
+  //                 OpenURL(msg.html_url)
+  //             }
+  //           })
+  //         }
+  //       }, {default: () => '查看'})
+  //     }
+  //   })
+  // })
 
-  EventsOn("updateNeedAdmin", (msg) => {
-    notify.warning({
-      avatar: () =>
-          h(NAvatar, {
-            size: 'small',
-            round: false,
-            src: icon.value
-          }),
-      title: '更新需要管理员权限',
-      content: () => {
-        return h('div', {
-          style: {
-            'text-align': 'left',
-            'font-size': '14px',
-          }
-        }, { default: () => '新版本 ' + (msg.version || '') + ' 下载完成，但自动替换文件需要管理员权限。请以管理员身份重启程序后再次检查更新。' })
-      },
-      duration: 15000,
-      action: () => {
-        return h(NButton, {
-          type: 'warning',
-          size: 'small',
-          onClick: () => {
-            RestartAsAdmin()
-          }
-        }, { default: () => '以管理员身份重启' })
-      }
-    })
-  })
+  // EventsOn("updateNeedAdmin", (msg) => {
+  //   notify.warning({
+  //     avatar: () =>
+  //         h(NAvatar, {
+  //           size: 'small',
+  //           round: false,
+  //           src: icon.value
+  //         }),
+  //     title: '更新需要管理员权限',
+  //     content: () => {
+  //       return h('div', {
+  //         style: {
+  //           'text-align': 'left',
+  //           'font-size': '14px',
+  //         }
+  //       }, { default: () => '新版本 ' + (msg.version || '') + ' 下载完成，但自动替换文件需要管理员权限。请以管理员身份重启程序后再次检查更新。' })
+  //     },
+  //     duration: 15000,
+  //     action: () => {
+  //       return h(NButton, {
+  //         type: 'warning',
+  //         size: 'small',
+  //         onClick: () => {
+  //           RestartAsAdmin()
+  //         }
+  //       }, { default: () => '以管理员身份重启' })
+  //     }
+  //   })
+  // })
 
   EventsOn("warnMsg", async (msg) => {
     notify.error({
@@ -879,8 +879,8 @@ onBeforeUnmount(() => {
   EventsOff("refreshFollowList")
   EventsOff("newChatStream")
   EventsOff("changeTab")
-  EventsOff("updateVersion")
-  EventsOff("updateNeedAdmin")
+  // EventsOff("updateVersion")
+  // EventsOff("updateNeedAdmin")
   EventsOff("warnMsg")
   EventsOff("loadingDone")
 
@@ -2128,7 +2128,7 @@ function fullscreen() {
 function SendMessage(result, type) {
   let typeName = getTypeName(type)
   let img = 'http://image.sinajs.cn/newchart/min/n/' + result["股票代码"] + '.gif' + "?t=" + Date.now()
-  let markdown = "### go-stock [" + typeName + "]\n\n" +
+  let markdown = "### China StockMind AI [" + typeName + "]\n\n" +
       "### " + result["股票名称"] + "(" + result["股票代码"] + ")\n" +
       "- 当前价格: " + result["当前价格"] + "  " + result.changePercent + "%\n" +
       "- 最高价: " + result["今日最高价"] + "  " + result.highRate + "\n" +
@@ -2482,7 +2482,7 @@ async function saveAsWord() {
          ${tipsHtml}
           </div>
 <br>
-本报告由go-stock项目生成：
+本报告由 China StockMind AI 生成：
 <p>
 <a href="https://github.com/ArvinLovegood/go-stock">
 AI赋能股票分析：自选股行情获取，成本盈亏展示，涨跌报警推送，市场整体/个股情绪分析，K线技术指标分析等。数据全部保留在本地。支持DeepSeek，OpenAI， Ollama，LMStudio，AnythingLLM，硅基流动，火山方舟，阿里云百炼等平台或模型。
@@ -3303,3 +3303,6 @@ watch(modalShow6, (newVal) => {
   opacity: 0.5;
 }
 </style>
+
+
+

@@ -873,7 +873,7 @@ func (a *App) domReady(ctx context.Context) {
 	}()
 	//检查新版本
 	go func() {
-		a.CheckUpdate(0)
+		// a.CheckUpdate(0)
 		// a.CheckUpdate(0)
 		go a.CheckStockBaseInfo(a.ctx)
 		go syncAllStockInfo(a.ctx)

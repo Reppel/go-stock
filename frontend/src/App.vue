@@ -1,4 +1,4 @@
-<script setup>
+﻿<script setup>
 import {
   EventsEmit,
   EventsOff,
@@ -99,7 +99,7 @@ function updateMarketStatus() {
     parts.push(hk ? '港股交易中' : '港股休市')
     parts.push(us ? '美股交易中' : '美股休市')
     marketStatus.value = parts.join(' | ')
-    WindowSetTitle("go-stock " + marketStatus.value + " " + officialStatement.value + "  「" + currentMotto.value + "」  [数据来源于网络，仅供参考；投资有风险，入市需谨慎]")
+    WindowSetTitle("China StockMind AI " + marketStatus.value + " " + officialStatement.value + "  「" + currentMotto.value + "」  [数据来源于网络，仅供参考；投资有风险，入市需谨慎]")
   })
 }
 
@@ -727,6 +727,7 @@ const menuOptions = ref([
           key: 'research3',
           icon: renderIcon(Prompt),
         },
+        /*
         {
           label: () =>
               h(
@@ -750,6 +751,8 @@ const menuOptions = ref([
           key: 'promptPlaza',
           icon: renderIcon(GlobeOutline),
         },
+        */
+        /*
         {
           label: () =>
               h(
@@ -773,6 +776,7 @@ const menuOptions = ref([
           key: 'promptQa',
           icon: renderIcon(ChatbubblesOutline),
         },
+        */
         {
           label: () =>
               h(
@@ -1275,3 +1279,4 @@ onMounted(() => {
 <style>
 
 </style>
+

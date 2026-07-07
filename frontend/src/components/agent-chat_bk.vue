@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="chat-box">
     <t-chat
         ref="chatRef"
@@ -128,7 +128,7 @@ const chatList = ref([
   // },
   {
     avatar: h(NImage, { src: icon.value, height: '48px', width: '48px'}),
-    name: 'Go-Stock AI',
+    name: 'China StockMind AI',
     datetime: '',
     reasoning: '',
     content: '我是您的AI赋能股票分析助手,您可以问我任何关于股票投资方面的问题。',
@@ -169,7 +169,7 @@ const inputEnter = function (inputValue) {
   // 空消息占位
   const params2 = {
     avatar:  h(NImage, { src: icon.value, height: '48px', width: '48px'}),
-    name: 'Go-Stock AI',
+    name: 'China StockMind AI',
     datetime: new Date().toDateString(),
     content: '',
     reasoning: '',

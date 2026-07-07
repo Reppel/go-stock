@@ -1,10 +1,10 @@
-<template>
+﻿<template>
   <Transition name="fade">
     <div
       v-if="showButton"
       :class="['edge-trigger', { 'edge-trigger-busy': hasBackgroundTask }]"
       @click="togglePanel"
-      :title="hasBackgroundTask ? 'go-stock AI Agent 助手正在后台分析...' : 'go-stock AI Agent 助手'"
+      :title="hasBackgroundTask ? 'China StockMind AI Agent 助手正在后台分析...' : 'China StockMind AI Agent 助手'"
     >
       <div class="edge-trigger-inner">
         <NIcon :component="SparklesOutline" size="18" />
@@ -26,7 +26,7 @@
         >
           <template #header>
             <div class="panel-header">
-              <span class="panel-title">go-stock AI Agent 助手</span>
+              <span class="panel-title">China StockMind AI Agent 助手</span>
               <div class="panel-actions">
                 <NButton size="small" quaternary @click="startNewChat" title="开始新对话">
                   新对话
@@ -340,7 +340,7 @@ import { MdPreview } from 'md-editor-v3'
 import 'md-editor-v3/lib/preview.css'
 import html2canvas from 'html2canvas'
 
-const STORAGE_KEY_MODEL_ID = 'go-stock-agent-last-model-id'
+const STORAGE_KEY_MODEL_ID = 'china-stockmind-ai-agent-last-model-id'
 
 const route = useRoute()
 const message = useMessage()
@@ -600,7 +600,7 @@ function shareAiContent(msg) {
     shareTipVisible.value = true
     return
   }
-  shareTextToCommunity(text, 'go-stock AI Agent助手')
+  shareTextToCommunity(text, 'China StockMind AI Agent助手')
 }
 
 function getLastAssistantContent() {
@@ -621,7 +621,7 @@ function shareAiToCommunity() {
     shareTipVisible.value = true
     return
   }
-  shareTextToCommunity(text, 'go-stock AI Agent助手')
+  shareTextToCommunity(text, 'China StockMind AI Agent助手')
 }
 
 async function exportAiReplyImage(assistantIndex, evt) {
@@ -689,7 +689,7 @@ async function exportAiReplyImage(assistantIndex, evt) {
     const dataUrl = canvas.toDataURL('image/png')
     const base64 = dataUrl.replace(/^data:image\/png;base64,/, '')
     const safeTime = new Date().toISOString().slice(0, 19).replace(/[:.]/g, '-')
-    const result = await SaveImage(`go-stock-agent-${safeTime}`, base64)
+    const result = await SaveImage(`China-StockMind-AI-Agent-${safeTime}`, base64)
     if (result && !result.includes('异常') && !result.includes('无法')) {
       shareTipText.value = '已导出为 PNG 图片：' + result
     } else {
@@ -778,7 +778,7 @@ function openPanel() {
     messages.value = [
       {
         role: 'assistant',
-        content: '我是 go-stock AI Agent 助手，可以帮您分析股票、查询市场数据、获取研究报告等。请问有什么可以帮您的？',
+        content: '我是 China StockMind AI Agent 助手，可以帮您分析股票、查询市场数据、获取研究报告等。请问有什么可以帮您的？',
         time: new Date().toLocaleString(),
         modelName: '',
         reasoning: ''
@@ -814,7 +814,7 @@ async function togglePanel() {
   if (!panelVisible.value) {
     await ensureVipInfo()
     if ((vipLevel.value ?? 0) < 2) {
-      message.warning('go-stock AI Agent 助手功能仅对 VIP2 及以上赞助用户开放，请前往关于页面查看赞助方式。')
+      message.warning('China StockMind AI Agent 助手功能仅对 VIP2 及以上赞助用户开放，请前往关于页面查看赞助方式。')
       return
     }
     openPanel()
@@ -1953,3 +1953,5 @@ body > div:has(.n-select-menu) {
   pointer-events: none;
 }
 </style>
+
+

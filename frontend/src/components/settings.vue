@@ -1,4 +1,4 @@
-<script setup>
+﻿<script setup>
 import {h, onBeforeUnmount, onMounted, ref} from "vue";
 import {
   AddPrompt,
@@ -323,7 +323,7 @@ function getHeight() {
 }
 
 function sendTestNotice() {
-  let markdown = "### go-stock test\n" + new Date()
+  let markdown = "### China StockMind AI test\n" + new Date()
   let msg = '{' +
       '     "msgtype": "markdown",' +
       '     "markdown": {' +
@@ -341,7 +341,7 @@ function sendTestNotice() {
 }
 
 function sendFeishuTestNotice() {
-  let markdown = "### go-stock 飞书测试\n" + new Date()
+  let markdown = "### China StockMind AI 飞书测试\n" + new Date()
   // 飞书卡片 JSON 2.0 协议：schema="2.0" + body.elements + markdown 元素
   // 文档：https://open.feishu.cn/document/feishu-cards/card-json-v2-components/content-components/rich-text
   let msg = JSON.stringify({
@@ -351,7 +351,7 @@ function sendFeishuTestNotice() {
       header: {
         title: {
           tag: "plain_text",
-          content: "go-stock 飞书测试 " + new Date()
+          content: "China StockMind AI 飞书测试 " + new Date()
         }
       },
       body: {
@@ -885,3 +885,4 @@ function deletePrompt(ID) {
   color: red;
 }
 </style>
+

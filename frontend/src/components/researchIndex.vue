@@ -61,12 +61,16 @@ function updateTab(name) {
       <n-tab-pane name="提示词模板">
         <PromptTemplateList/>
       </n-tab-pane>
+      <!--
       <n-tab-pane name="提示词广场">
         <PromptPlaza/>
       </n-tab-pane>
+      -->
+      <!--
       <n-tab-pane name="问答广场">
         <PromptQa/>
       </n-tab-pane>
+      -->
       <n-tab-pane name="形态选股">
         <AllStockList/>
       </n-tab-pane>

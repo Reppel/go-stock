@@ -98,6 +98,10 @@ export function CreateMCPServer(arg1) {
   return window['go']['main']['App']['CreateMCPServer'](arg1);
 }
 
+export function CreatePredictionSession(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['CreatePredictionSession'](arg1, arg2, arg3, arg4, arg5);
+}
+
 export function CreateSkill(arg1) {
   return window['go']['main']['App']['CreateSkill'](arg1);
 }
@@ -144,6 +148,10 @@ export function DeleteStockChangeHistory(arg1) {
 
 export function DeleteTradingRecord(arg1) {
   return window['go']['main']['App']['DeleteTradingRecord'](arg1);
+}
+
+export function DisablePredictionHypothesis(arg1) {
+  return window['go']['main']['App']['DisablePredictionHypothesis'](arg1);
 }
 
 export function EMDictCode(arg1) {
@@ -414,6 +422,26 @@ export function GetMoneyRankSina(arg1) {
   return window['go']['main']['App']['GetMoneyRankSina'](arg1);
 }
 
+export function GetMyPredictionHypotheses() {
+  return window['go']['main']['App']['GetMyPredictionHypotheses']();
+}
+
+export function GetPredictionHypothesisDailyNAV(arg1) {
+  return window['go']['main']['App']['GetPredictionHypothesisDailyNAV'](arg1);
+}
+
+export function GetPredictionHypothesisStats(arg1) {
+  return window['go']['main']['App']['GetPredictionHypothesisStats'](arg1);
+}
+
+export function GetPredictionSession(arg1) {
+  return window['go']['main']['App']['GetPredictionSession'](arg1);
+}
+
+export function GetPredictionSignals(arg1) {
+  return window['go']['main']['App']['GetPredictionSignals'](arg1);
+}
+
 export function GetPromptTemplateList(arg1) {
   return window['go']['main']['App']['GetPromptTemplateList'](arg1);
 }
@@ -678,6 +706,10 @@ export function SaveImage(arg1, arg2) {
   return window['go']['main']['App']['SaveImage'](arg1, arg2);
 }
 
+export function SavePredictionHypothesis(arg1) {
+  return window['go']['main']['App']['SavePredictionHypothesis'](arg1);
+}
+
 export function SaveStockChangesToHistory(arg1) {
   return window['go']['main']['App']['SaveStockChangesToHistory'](arg1);
 }
@@ -756,6 +788,10 @@ export function StockResearchReport(arg1) {
 
 export function SummaryStockNews(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
   return window['go']['main']['App']['SummaryStockNews'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
+}
+
+export function SyncStockFeatures(arg1) {
+  return window['go']['main']['App']['SyncStockFeatures'](arg1);
 }
 
 export function TestMCPServer(arg1) {

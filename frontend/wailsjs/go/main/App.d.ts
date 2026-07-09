@@ -54,6 +54,8 @@ export function CreateCronTask(arg1:models.CronTask):Promise<string>;
 
 export function CreateMCPServer(arg1:models.MCPServer):Promise<string>;
 
+export function CreatePredictionSession(arg1:string,arg2:string,arg3:string,arg4:string,arg5:number):Promise<Record<string, any>>;
+
 export function CreateSkill(arg1:models.Skill):Promise<string>;
 
 export function DelPrompt(arg1:number):Promise<string>;
@@ -77,6 +79,8 @@ export function DeleteSkill(arg1:number):Promise<string>;
 export function DeleteStockChangeHistory(arg1:number):Promise<string>;
 
 export function DeleteTradingRecord(arg1:number):Promise<void>;
+
+export function DisablePredictionHypothesis(arg1:number):Promise<string>;
 
 export function EMDictCode(arg1:string):Promise<Array<any>>;
 
@@ -212,6 +216,16 @@ export function GetMarketStatisticByDate(arg1:string):Promise<Array<models.Marke
 
 export function GetMoneyRankSina(arg1:string):Promise<Array<Record<string, any>>>;
 
+export function GetMyPredictionHypotheses():Promise<Array<models.PredictionHypothesis>>;
+
+export function GetPredictionHypothesisDailyNAV(arg1:number):Promise<Array<models.PredictionHypothesisDaily>>;
+
+export function GetPredictionHypothesisStats(arg1:number):Promise<Record<string, any>>;
+
+export function GetPredictionSession(arg1:number):Promise<Record<string, any>>;
+
+export function GetPredictionSignals(arg1:number):Promise<Array<models.PredictionSignal>>;
+
 export function GetPromptTemplateList(arg1:models.PromptTemplateQuery):Promise<models.PromptTemplatePageData>;
 
 export function GetPromptTemplates(arg1:string,arg2:string):Promise<any>;
@@ -344,6 +358,8 @@ export function SaveCustomStrategy(arg1:models.CustomStrategy):Promise<string>;
 
 export function SaveImage(arg1:string,arg2:string):Promise<string>;
 
+export function SavePredictionHypothesis(arg1:number):Promise<string>;
+
 export function SaveStockChangesToHistory(arg1:Array<number>):Promise<string>;
 
 export function SaveWordFile(arg1:string,arg2:string):Promise<string>;
@@ -383,6 +399,8 @@ export function StockNotice(arg1:string):Promise<Array<any>>;
 export function StockResearchReport(arg1:string):Promise<Array<any>>;
 
 export function SummaryStockNews(arg1:string,arg2:number,arg3:any,arg4:boolean,arg5:boolean,arg6:string,arg7:string):Promise<void>;
+
+export function SyncStockFeatures(arg1:string):Promise<string>;
 
 export function TestMCPServer(arg1:number):Promise<string>;
 

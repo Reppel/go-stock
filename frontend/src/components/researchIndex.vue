@@ -16,6 +16,7 @@ import UplimitLadder from "./uplimitLadder.vue";
 import PromptPlaza from "./promptPlaza.vue";
 import PromptQa from "./promptQa.vue";
 import SelectStock from "./SelectStock.vue";
+import PredictionFactory from "./PredictionFactory.vue";
 import {EventsOff, EventsOn} from "../../wailsjs/runtime";
 import {useRoute} from 'vue-router'
 
@@ -77,6 +78,9 @@ function updateTab(name) {
       <n-tab-pane name="指标选股">
         <SelectStock/>
       </n-tab-pane>
+      <n-tab-pane name="AI预测工厂">
+        <PredictionFactory/>
+      </n-tab-pane>
       <n-tab-pane name="定时任务">
         <CronTaskManager />
       </n-tab-pane>
@@ -91,7 +95,7 @@ function updateTab(name) {
       </n-tab-pane>
 <!--      <n-tab-pane name="技能管理">-->
 <!--        <SkillManager/>-->
-<!--      </n-tab-pane>-->
+<!--      </n-tab-pane-->
     </n-tabs>
   </n-card>
 </template>

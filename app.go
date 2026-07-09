@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"go-stock/backend/agent"
 	"go-stock/backend/agent/tools"
+	"go-stock/backend/backtest"
 	"go-stock/backend/data"
 	"go-stock/backend/db"
 	"go-stock/backend/logger"
@@ -95,8 +96,8 @@ func (a *App) GetSponsorInfo() map[string]any {
 	// 为便于运营，暂时固定返回 VIP2 有效，并设置一个长期有效期。
 	// 后续可恢复为返回 a.SponsorInfo 的原始逻辑。
 	return map[string]any{
-		"vipLevel":    2,
-		"active":      true,
+		"vipLevel":     2,
+		"active":       true,
 		"vipStartTime": "2025-01-01 00:00:00",
 		"vipEndTime":   "2099-12-31 23:59:59",
 	}
@@ -889,6 +890,8 @@ func (a *App) domReady(ctx context.Context) {
 		a.cron.AddFunc("30 05 8,12,20 * * *", func() {
 			syncAllStockInfo(a.ctx)
 		})
+
+		// AI 预测工厂定时任务由 InitCronTasks 统一调度
 	}()
 
 	//检查谷歌浏览器
@@ -2998,6 +3001,8 @@ func (a *App) InitCronTasks() {
 			logger.SugaredLogger.Info("已自动创建异动数据保存定时任务")
 		}
 	}
+	// 初始化 AI 预测工厂默认定时任务
+	a.initPredictionCronTasks(cronApi)
 	tasks := cronApi.GetAll()
 	if len(tasks) == 0 {
 		return
@@ -3016,6 +3021,49 @@ func (a *App) InitCronTasks() {
 			continue
 		}
 		a.setCronEntry(convertor.ToString(taskCopy.ID)+"_"+taskCopy.Name, entryID)
+	}
+}
+
+// initPredictionCronTasks 初始化 AI 预测工厂默认定时任务
+func (a *App) initPredictionCronTasks(cronApi *agent.CronTaskApi) {
+	predictionTasks := []models.CronTask{
+		{
+			Name:        "预测工厂-同步特征",
+			CronExpr:    "0 0 3 * * *",
+			TaskType:    "prediction_sync_features",
+			Enable:      true,
+			Status:      "active",
+			Description: "每天凌晨 3 点同步 AI 预测工厂股票特征数据",
+			Params:      `{"stockScope":"全部A股","days":365}`,
+		},
+		{
+			Name:        "预测工厂-扫描信号",
+			CronExpr:    "0 30 15 * * 1-5",
+			TaskType:    "prediction_scan_signals",
+			Enable:      true,
+			Status:      "active",
+			Description: "工作日 15:30 扫描 AI 预测工厂预测信号",
+		},
+		{
+			Name:        "预测工厂-验证信号",
+			CronExpr:    "0 0 16 * * 1-5",
+			TaskType:    "prediction_validate_signals",
+			Enable:      true,
+			Status:      "active",
+			Description: "工作日 16:00 验证 AI 预测工厂预测信号",
+		},
+	}
+
+	for _, task := range predictionTasks {
+		if !cronApi.ExistsByTaskType(task.TaskType) {
+			t := task
+			err := cronApi.Create(&t)
+			if err != nil {
+				logger.SugaredLogger.Errorf("自动创建 %s 任务失败：%v", t.Name, err)
+			} else {
+				logger.SugaredLogger.Infof("已自动创建 %s 定时任务", t.Name)
+			}
+		}
 	}
 }
 
@@ -3460,4 +3508,93 @@ func (a *App) GetMCPToolsByServerID(serverID uint) []models.MCPServerTool {
 
 func (a *App) GetAllMCPTools() []models.MCPServerTool {
 	return data.NewMCPServerApi().GetAllTools()
+}
+
+// CreatePredictionSession 创建 AI 预测会话
+func (a *App) CreatePredictionSession(scene, stockScope, startDate, endDate string, aiConfigId int) map[string]any {
+	svc := backtest.NewPredictionService()
+	session, hypotheses, err := svc.CreateSession(scene, stockScope, startDate, endDate, aiConfigId)
+	if err != nil {
+		return map[string]any{"code": 0, "msg": err.Error()}
+	}
+	return map[string]any{
+		"code":      1,
+		"data":      map[string]any{"session": session, "hypotheses": hypotheses},
+		"sessionId": session.ID,
+	}
+}
+
+// GetPredictionSession 获取预测会话详情
+func (a *App) GetPredictionSession(sessionID uint) map[string]any {
+	svc := backtest.NewPredictionService()
+	session, hypotheses, err := svc.GetSession(sessionID)
+	if err != nil {
+		return map[string]any{"code": 0, "msg": err.Error()}
+	}
+	return map[string]any{
+		"code": 1,
+		"data": map[string]any{"session": session, "hypotheses": hypotheses},
+	}
+}
+
+// GetMyPredictionHypotheses 获取我的预测假设
+func (a *App) GetMyPredictionHypotheses() []models.PredictionHypothesis {
+	svc := backtest.NewPredictionService()
+	return svc.GetMyHypotheses()
+}
+
+// SavePredictionHypothesis 保存假设为监控
+func (a *App) SavePredictionHypothesis(hypothesisID uint) string {
+	svc := backtest.NewPredictionService()
+	if err := svc.SaveHypothesis(hypothesisID); err != nil {
+		return "保存失败: " + err.Error()
+	}
+	return "保存成功"
+}
+
+// DisablePredictionHypothesis 禁用假设
+func (a *App) DisablePredictionHypothesis(hypothesisID uint) string {
+	svc := backtest.NewPredictionService()
+	if err := svc.DisableHypothesis(hypothesisID); err != nil {
+		return "禁用失败: " + err.Error()
+	}
+	return "禁用成功"
+}
+
+// GetPredictionHypothesisStats 获取假设验证统计
+func (a *App) GetPredictionHypothesisStats(hypothesisID uint) map[string]any {
+	svc := backtest.NewPredictionService()
+	stats, err := svc.GetHypothesisStats(hypothesisID)
+	if err != nil {
+		return map[string]any{"code": 0, "msg": err.Error()}
+	}
+	return map[string]any{"code": 1, "data": stats}
+}
+
+// GetPredictionHypothesisDailyNAV 获取假设净值曲线
+func (a *App) GetPredictionHypothesisDailyNAV(hypothesisID uint) []models.PredictionHypothesisDaily {
+	svc := backtest.NewPredictionService()
+	return svc.GetHypothesisDailyNAV(hypothesisID)
+}
+
+// GetPredictionSignals 获取预测信号列表
+func (a *App) GetPredictionSignals(hypothesisID uint) []models.PredictionSignal {
+	var signals []models.PredictionSignal
+	db.Dao.Where("hypothesis_id = ?", hypothesisID).Order("signal_date desc").Find(&signals)
+	return signals
+}
+
+// SyncStockFeatures 手动同步股票特征数据
+func (a *App) SyncStockFeatures(stockScope string) string {
+	go func() {
+		poolService := backtest.NewStockPoolService()
+		stockCodes := poolService.GetStockPool(stockScope)
+		if len(stockCodes) == 0 {
+			logger.SugaredLogger.Warn("同步特征失败：股票池为空")
+			return
+		}
+		backtest.NewFeatureSyncService().SyncAllStockFeatures(stockCodes, 365)
+		logger.SugaredLogger.Infof("股票特征同步完成，共 %d 只", len(stockCodes))
+	}()
+	return "特征同步任务已启动，后台执行中..."
 }

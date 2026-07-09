@@ -516,7 +516,6 @@ const menuOptions = ref([
   {
     label: () =>
         h(
-            RouterLink,
             {
               to: {
                 name: 'fund',
@@ -822,6 +821,29 @@ const menuOptions = ref([
               ),
           key: 'research_select_stock',
           icon: renderIcon(BoxSearch20Regular),
+        },
+        {
+          label: () =>
+              h(
+                  RouterLink,
+                  {
+                    to: {
+                      name: 'research',
+                      query: {
+                        name:"AI预测工厂",
+                      },
+                    },
+                    onClick: () => {
+                      activeKey.value = 'research'
+                      setTimeout(() => {
+                        EventsEmit("changeResearchTab", {ID: 10, name: 'AI预测工厂'})
+                      }, 100)
+                    },
+                  },
+                  {default: () => 'AI预测工厂'}
+              ),
+          key: 'research_prediction_factory',
+          icon: renderIcon(Pulse),
         },
         {
           label: () =>

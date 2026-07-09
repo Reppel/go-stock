@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"go-stock/backend/backtest"
 	"go-stock/backend/data"
 	"go-stock/backend/db"
 	"go-stock/backend/logger"
@@ -135,6 +136,9 @@ func (a *CronTaskApi) GetTaskTypes() []lo.Tuple2[string, string] {
 		{A: "market_analysis", B: "市场分析"},
 		{A: "global_stock_index_cache", B: "全球指数缓存"},
 		{A: "stock_change_save", B: "异动数据保存"},
+		{A: "prediction_sync_features", B: "预测工厂-同步特征"},
+		{A: "prediction_scan_signals", B: "预测工厂-扫描信号"},
+		{A: "prediction_validate_signals", B: "预测工厂-验证信号"},
 	}
 }
 
@@ -214,6 +218,12 @@ func (a *CronTaskApi) executeTaskByType(ctx context.Context, task *models.CronTa
 		return a.executeStockMonitor(ctx, task)
 	case "stock_change_save":
 		return a.executeStockChangeSave(ctx, task)
+	case "prediction_sync_features":
+		return a.executePredictionSyncFeatures(ctx, task)
+	case "prediction_scan_signals":
+		return a.executePredictionScanSignals(ctx, task)
+	case "prediction_validate_signals":
+		return a.executePredictionValidateSignals(ctx, task)
 	case "custom":
 		return a.executeCustomTask(ctx, task)
 	default:
@@ -383,6 +393,46 @@ func (a *CronTaskApi) executeGlobalStockIndexCache(ctx context.Context, task *mo
 		params.CrawlTimeOut = 30
 	}
 	return data.NewMarketNewsApi().CacheGlobalStockIndexes(params.CrawlTimeOut)
+}
+
+func (a *CronTaskApi) executePredictionSyncFeatures(ctx context.Context, task *models.CronTask) error {
+	logger.SugaredLogger.Infof("执行预测工厂特征同步任务：%s", task.Name)
+	var params struct {
+		StockScope string `json:"stockScope"`
+		Days       int    `json:"days"`
+	}
+	if task.Params != "" {
+		if err := json.Unmarshal([]byte(task.Params), &params); err != nil {
+			logger.SugaredLogger.Errorf("解析任务参数失败：%v", err)
+			return err
+		}
+	}
+	if params.StockScope == "" {
+		params.StockScope = "全部A股"
+	}
+	if params.Days <= 0 {
+		params.Days = 365
+	}
+
+	poolService := backtest.NewStockPoolService()
+	stockCodes := poolService.GetStockPool(params.StockScope)
+	if len(stockCodes) == 0 {
+		return fmt.Errorf("股票池为空：%s", params.StockScope)
+	}
+	backtest.NewFeatureSyncService().SyncAllStockFeatures(stockCodes, params.Days)
+	return nil
+}
+
+func (a *CronTaskApi) executePredictionScanSignals(ctx context.Context, task *models.CronTask) error {
+	logger.SugaredLogger.Infof("执行预测工厂扫描信号任务：%s", task.Name)
+	backtest.NewPredictionService().ScanSignals()
+	return nil
+}
+
+func (a *CronTaskApi) executePredictionValidateSignals(ctx context.Context, task *models.CronTask) error {
+	logger.SugaredLogger.Infof("执行预测工厂验证信号任务：%s", task.Name)
+	backtest.NewPredictionService().DailyValidateSignals()
+	return nil
 }
 
 func (a *CronTaskApi) executeStockChangeSave(ctx context.Context, task *models.CronTask) error {

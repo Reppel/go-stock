@@ -2679,6 +2679,148 @@ export namespace models {
 		    return a;
 		}
 	}
+	export class PredictionHypothesis {
+	    id: number;
+	    sessionId: number;
+	    name: string;
+	    description: string;
+	    scene: string;
+	    ruleJson: string;
+	    params: string;
+	    timeHorizon: number;
+	    targetReturn: number;
+	    winRate: number;
+	    avgReturn: number;
+	    maxDrawdown: number;
+	    tradeCount: number;
+	    validReturn: number;
+	    validCount: number;
+	    status: string;
+	    // Go type: time
+	    createdAt: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new PredictionHypothesis(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.sessionId = source["sessionId"];
+	        this.name = source["name"];
+	        this.description = source["description"];
+	        this.scene = source["scene"];
+	        this.ruleJson = source["ruleJson"];
+	        this.params = source["params"];
+	        this.timeHorizon = source["timeHorizon"];
+	        this.targetReturn = source["targetReturn"];
+	        this.winRate = source["winRate"];
+	        this.avgReturn = source["avgReturn"];
+	        this.maxDrawdown = source["maxDrawdown"];
+	        this.tradeCount = source["tradeCount"];
+	        this.validReturn = source["validReturn"];
+	        this.validCount = source["validCount"];
+	        this.status = source["status"];
+	        this.createdAt = this.convertValues(source["createdAt"], null);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class PredictionHypothesisDaily {
+	    id: number;
+	    hypothesisId: number;
+	    date: string;
+	    nav: number;
+	    drawdown: number;
+	    tradeCount: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new PredictionHypothesisDaily(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.hypothesisId = source["hypothesisId"];
+	        this.date = source["date"];
+	        this.nav = source["nav"];
+	        this.drawdown = source["drawdown"];
+	        this.tradeCount = source["tradeCount"];
+	    }
+	}
+	export class PredictionSignal {
+	    id: number;
+	    hypothesisId: number;
+	    stockCode: string;
+	    stockName: string;
+	    signalDate: string;
+	    entryPrice: number;
+	    targetDate: string;
+	    targetReturn: number;
+	    actualReturn: number;
+	    maxReturn: number;
+	    maxDrawdown: number;
+	    // Go type: time
+	    validatedAt: any;
+	    hit: boolean;
+	    status: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PredictionSignal(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.hypothesisId = source["hypothesisId"];
+	        this.stockCode = source["stockCode"];
+	        this.stockName = source["stockName"];
+	        this.signalDate = source["signalDate"];
+	        this.entryPrice = source["entryPrice"];
+	        this.targetDate = source["targetDate"];
+	        this.targetReturn = source["targetReturn"];
+	        this.actualReturn = source["actualReturn"];
+	        this.maxReturn = source["maxReturn"];
+	        this.maxDrawdown = source["maxDrawdown"];
+	        this.validatedAt = this.convertValues(source["validatedAt"], null);
+	        this.hit = source["hit"];
+	        this.status = source["status"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class Prompt {
 	    ID: number;
 	    name: string;

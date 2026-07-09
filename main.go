@@ -78,7 +78,7 @@ func main() {
 	data.SetAppIcon(icon)
 	db.Init("")
 	data.InitAnalyzeSentiment()
-	go AutoMigrate()
+	AutoMigrate()
 
 	//db.Dao.Model(&data.Group{}).Where("id = ?", 0).FirstOrCreate(&data.Group{
 	//	Name: "默认分组",
@@ -302,6 +302,11 @@ func AutoMigrate() {
 	db.Dao.AutoMigrate(&models.CustomStrategy{})
 	db.Dao.AutoMigrate(&models.BKFundFlow{})
 	db.Dao.AutoMigrate(&models.ConceptFundFlow{})
+	db.Dao.AutoMigrate(&models.PredictionSession{})
+	db.Dao.AutoMigrate(&models.PredictionHypothesis{})
+	db.Dao.AutoMigrate(&models.PredictionSignal{})
+	db.Dao.AutoMigrate(&models.PredictionHypothesisDaily{})
+	db.Dao.AutoMigrate(&models.StockFeature{})
 
 	//updateMultipleModel()
 

@@ -63,4 +63,9 @@ func AutoMigrate() {
 	Dao.AutoMigrate(&ChatMemory{})
 	Dao.AutoMigrate(&models.StockChangeHistory{})
 	Dao.AutoMigrate(&models.MarketStatistic{})
+	Dao.AutoMigrate(&models.PredictionSession{})
+	Dao.AutoMigrate(&models.PredictionHypothesis{})
+	Dao.AutoMigrate(&models.PredictionSignal{})
+	Dao.AutoMigrate(&models.PredictionHypothesisDaily{})
+	Dao.AutoMigrate(&models.StockFeature{})
 }

@@ -2891,6 +2891,38 @@ func (receiver StockDataApi) GetTradingPositionSummaries(stockCodes []string) []
 		}
 	}
 
+	realtimePrices := make(map[string]float64, len(states))
+	realtimeCodes := make([]string, 0, len(states))
+	for code, state := range states {
+		hasPosition := false
+		for _, lot := range state.lots {
+			if lot.Volume > 0 {
+				hasPosition = true
+				break
+			}
+		}
+		if hasPosition {
+			realtimeCodes = append(realtimeCodes, code)
+		}
+	}
+	if len(realtimeCodes) > 0 {
+		quotes, err := receiver.GetStockCodeRealTimeData(realtimeCodes...)
+		if err != nil {
+			logger.SugaredLogger.Warnf("refresh trading position prices failed: %v", err)
+		} else if quotes != nil {
+			for _, quote := range *quotes {
+				code := normalizeTradingRecordAPI(quote.Code)
+				price, _ := convertor.ToFloat(quote.Price)
+				if price <= 0 {
+					price, _ = convertor.ToFloat(quote.A1P)
+				}
+				if code != "" && price > 0 {
+					realtimePrices[code] = price
+				}
+			}
+		}
+	}
+
 	result := make([]TradingPositionSummary, 0, len(states))
 	for _, state := range states {
 		var currentVolume int64
@@ -2909,7 +2941,10 @@ func (receiver StockDataApi) GetTradingPositionSummaries(stockCodes []string) []
 		if currentVolume > 0 {
 			avgCost = costAmount / float64(currentVolume)
 		}
-		currentPrice := receiver.resolveTradingPositionPrice(state.code, state.lastPrice)
+		currentPrice := realtimePrices[state.code]
+		if currentPrice <= 0 {
+			currentPrice = receiver.resolveTradingPositionPrice(state.code, state.lastPrice)
+		}
 		marketValue := currentPrice * float64(currentVolume)
 		floatingProfit := marketValue - costAmount
 		floatingRate := 0.0

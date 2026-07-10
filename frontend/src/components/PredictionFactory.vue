@@ -124,9 +124,16 @@ const featureFreshness = ref(null)
 const syncJob = ref(null)
 const cronStatus = ref([])
 let syncTimer = null
+let positionTimer = null
+const positionRefreshIntervalMs = 15000
 
 onMounted(async () => {
   loadPositionRows()
+  positionTimer = setInterval(() => {
+    if (document.visibilityState === 'visible') {
+      loadPositionRows(true)
+    }
+  }, positionRefreshIntervalMs)
   loadAiConfigs()
   loadFeatureStatus()
   loadCronStatus()
@@ -140,6 +147,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   if (syncTimer) clearInterval(syncTimer)
+  if (positionTimer) clearInterval(positionTimer)
 })
 
 watch(() => [form.value.stockScope, form.value.stockCode], async () => {
@@ -214,7 +222,8 @@ async function loadPredictionSessions() {
   }
 }
 
-async function loadPositionRows() {
+async function loadPositionRows(silent = false) {
+  if (positionLoading.value) return
   positionLoading.value = true
   try {
     const scope = resolveScope(false)
@@ -224,7 +233,11 @@ async function loadPositionRows() {
     }
     positionRows.value = await GetTradingPositionSummaries(scope) || []
   } catch (err) {
-    message.error('加载持仓信息失败: ' + (err?.message || String(err)))
+    if (silent) {
+      console.warn('刷新持仓信息失败', err)
+    } else {
+      message.error('加载持仓信息失败: ' + (err?.message || String(err)))
+    }
   } finally {
     positionLoading.value = false
   }

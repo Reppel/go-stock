@@ -78,14 +78,16 @@ func (r *RiskEngine) EvaluateCurrent(
 	bestTargetReturn float64,
 	score float64,
 	sampleWarning bool,
+	scene string,
 ) RiskAssessment {
+	profile := riskProfileForScene(scene)
 	if bestStopLoss <= 0 {
-		bestStopLoss = 0.03
+		bestStopLoss = profile.DefaultStopLoss
 	}
-	bestStopLoss = normalizePct(bestStopLoss, 0.03, 0.07)
-	bestTargetReturn = normalizePct(bestTargetReturn, 0.01, 0.08)
-	if bestTargetReturn < 0.01 {
-		bestTargetReturn = 0.01
+	bestStopLoss = normalizePct(bestStopLoss, profile.MinStopLoss, profile.MaxStopLoss)
+	bestTargetReturn = normalizePct(bestTargetReturn, profile.MinTargetReturn, profile.MaxTargetReturn)
+	if bestTargetReturn < profile.MinTargetReturn {
+		bestTargetReturn = profile.MinTargetReturn
 	}
 
 	assessment := RiskAssessment{
@@ -104,7 +106,7 @@ func (r *RiskEngine) EvaluateCurrent(
 		return assessment
 	}
 
-	assessment.DefensePrice = costPrice * 0.98
+	assessment.DefensePrice = costPrice * (1 - profile.DefenseRate)
 	assessment.StopLossPrice = costPrice * (1 - bestStopLoss)
 	assessment.TakeProfitPrice = costPrice * (1 + bestTargetReturn)
 	if currentPrice <= assessment.StopLossPrice && assessment.StopLossPrice > 0 {
@@ -132,6 +134,38 @@ func (r *RiskEngine) EvaluateCurrent(
 		assessment.Warnings = append(assessment.Warnings, "回测样本不足")
 	}
 	return assessment
+}
+
+type sceneRiskProfile struct {
+	DefenseRate     float64
+	DefaultStopLoss float64
+	MinStopLoss     float64
+	MaxStopLoss     float64
+	MinTargetReturn float64
+	MaxTargetReturn float64
+}
+
+func riskProfileForScene(scene string) sceneRiskProfile {
+	switch scene {
+	case "波段反弹":
+		return sceneRiskProfile{
+			DefenseRate: 0.03, DefaultStopLoss: 0.05,
+			MinStopLoss: 0.04, MaxStopLoss: 0.08,
+			MinTargetReturn: 0.03, MaxTargetReturn: 0.10,
+		}
+	case "趋势持有":
+		return sceneRiskProfile{
+			DefenseRate: 0.05, DefaultStopLoss: 0.08,
+			MinStopLoss: 0.06, MaxStopLoss: 0.12,
+			MinTargetReturn: 0.05, MaxTargetReturn: 0.15,
+		}
+	default:
+		return sceneRiskProfile{
+			DefenseRate: 0.02, DefaultStopLoss: 0.03,
+			MinStopLoss: 0.03, MaxStopLoss: 0.05,
+			MinTargetReturn: 0.01, MaxTargetReturn: 0.05,
+		}
+	}
 }
 
 func normalizePct(value float64, min float64, max float64) float64 {

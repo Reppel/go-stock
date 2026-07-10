@@ -218,7 +218,7 @@ func (s *PredictionService) CreateSession(
 			BacktestConfigJSON:   string(backtestConfigJSON),
 			GenerationSource:     source,
 			SchemaVersion:        PredictionRuleSchemaV1,
-			StrategyVersion:      "strategy_v1",
+			StrategyVersion:      CurrentStrategyVersion,
 			FeatureVersion:       config.FeatureVersion,
 			Status:               "draft",
 		}
@@ -403,10 +403,13 @@ func (s *PredictionService) SaveHypothesis(hypothesisID uint) error {
 	if err := db.Dao.First(&hypothesis, hypothesisID).Error; err != nil {
 		return fmt.Errorf("预测假设不存在")
 	}
+	if hypothesis.StrategyVersion != CurrentStrategyVersion {
+		return fmt.Errorf("该结果使用旧版回测口径，请重新生成预测后再启用正式监控")
+	}
 	if !hypothesis.NoLookaheadPassed {
 		return fmt.Errorf("策略未通过未来函数检查，不能保存监控")
 	}
-	if hypothesis.TradeCount < 30 {
+	if hypothesis.TradeCount < MinPoolStrategySamples {
 		return fmt.Errorf("样本不足，仅供观察，不建议保存监控")
 	}
 	if hypothesis.MaxDrawdown > 0.20 {
@@ -539,6 +542,9 @@ type matchedStrategyFact struct {
 	AvgReturn    float64 `json:"avgReturn"`
 	MaxDrawdown  float64 `json:"maxDrawdown"`
 	TradeCount   int     `json:"tradeCount"`
+	PoolTradeCount  int  `json:"poolTradeCount"`
+	StockTradeCount int  `json:"stockTradeCount"`
+	SampleReady     bool `json:"sampleReady"`
 	MonitorReady bool    `json:"monitorReady"`
 }
 
@@ -779,7 +785,7 @@ func decisionConfidence(score float64, sampleWarning bool) string {
 }
 
 func hypothesisMonitorReady(h models.PredictionHypothesis) bool {
-	return h.NoLookaheadPassed && h.TradeCount >= 30 && h.MaxDrawdown <= 0.20 && h.AvgReturn > 0
+	return h.StrategyVersion == CurrentStrategyVersion && h.NoLookaheadPassed && h.TradeCount >= MinPoolStrategySamples && h.MaxDrawdown <= 0.20 && h.AvgReturn > 0 && h.OutSampleAvgReturn >= -0.02
 }
 
 func parseFloat(raw string) float64 {

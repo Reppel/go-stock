@@ -30,6 +30,9 @@ export namespace backtest {
 	    title: string;
 	    message: string;
 	    reason: string;
+	    suggestedAction: string;
+	    scene: string;
+	    monitorMode: string;
 	    price: number;
 	    thresholdPrice: number;
 	    // Go type: time
@@ -50,6 +53,9 @@ export namespace backtest {
 	        this.title = source["title"];
 	        this.message = source["message"];
 	        this.reason = source["reason"];
+	        this.suggestedAction = source["suggestedAction"];
+	        this.scene = source["scene"];
+	        this.monitorMode = source["monitorMode"];
 	        this.price = source["price"];
 	        this.thresholdPrice = source["thresholdPrice"];
 	        this.createdAt = this.convertValues(source["createdAt"], null);
@@ -2852,6 +2858,9 @@ export namespace models {
 	    message: string;
 	    triggerPrice: number;
 	    thresholdPrice: number;
+	    suggestedAction: string;
+	    scene: string;
+	    monitorMode: string;
 	    status: string;
 	    channel: string;
 	    reason: string;
@@ -2884,6 +2893,9 @@ export namespace models {
 	        this.message = source["message"];
 	        this.triggerPrice = source["triggerPrice"];
 	        this.thresholdPrice = source["thresholdPrice"];
+	        this.suggestedAction = source["suggestedAction"];
+	        this.scene = source["scene"];
+	        this.monitorMode = source["monitorMode"];
 	        this.status = source["status"];
 	        this.channel = source["channel"];
 	        this.reason = source["reason"];
@@ -2947,6 +2959,10 @@ export namespace models {
 	    reasonsJson: string;
 	    risksJson: string;
 	    sampleWarning: boolean;
+	    poolSampleCount: number;
+	    stockSampleCount: number;
+	    sampleSummaryJson: string;
+	    dataStatusJson: string;
 	    featureVersion: string;
 	    // Go type: time
 	    dataAsOf: any;
@@ -2994,6 +3010,10 @@ export namespace models {
 	        this.reasonsJson = source["reasonsJson"];
 	        this.risksJson = source["risksJson"];
 	        this.sampleWarning = source["sampleWarning"];
+	        this.poolSampleCount = source["poolSampleCount"];
+	        this.stockSampleCount = source["stockSampleCount"];
+	        this.sampleSummaryJson = source["sampleSummaryJson"];
+	        this.dataStatusJson = source["dataStatusJson"];
 	        this.featureVersion = source["featureVersion"];
 	        this.dataAsOf = this.convertValues(source["dataAsOf"], null);
 	        this.status = source["status"];

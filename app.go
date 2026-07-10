@@ -3644,6 +3644,22 @@ func (a *App) GetPredictionSession(sessionID uint) map[string]any {
 	}
 }
 
+func (a *App) RecalculatePredictionSession(sessionID uint) map[string]any {
+	svc := backtest.NewPredictionService()
+	session, hypotheses, err := svc.RecalculateSession(sessionID)
+	if err != nil {
+		return map[string]any{"code": 0, "msg": err.Error()}
+	}
+	return map[string]any{
+		"code": 1,
+		"data": map[string]any{
+			"session":    session,
+			"hypotheses": hypotheses,
+			"decisions":  svc.GetSessionDecisions(sessionID),
+		},
+	}
+}
+
 // GetMyPredictionHypotheses 获取我的预测假设
 func (a *App) GetMyPredictionHypotheses() []models.PredictionHypothesis {
 	svc := backtest.NewPredictionService()

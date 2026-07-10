@@ -762,6 +762,10 @@ export function RebuildPredictionFeatureView(arg1) {
   return window['go']['main']['App']['RebuildPredictionFeatureView'](arg1);
 }
 
+export function RecalculatePredictionSession(arg1) {
+  return window['go']['main']['App']['RecalculatePredictionSession'](arg1);
+}
+
 export function RefreshMarketFactors(arg1) {
   return window['go']['main']['App']['RefreshMarketFactors'](arg1);
 }

@@ -15,7 +15,6 @@ import (
 )
 
 const predictionAlertLookbackDays = 14
-const predictionAlertDedupWindow = 5 * time.Minute
 
 type PredictionAlertScanResult struct {
 	Scanned   int                         `json:"scanned"`
@@ -29,6 +28,13 @@ type PredictionAlertService struct {
 	engine *AlertEngine
 }
 
+type monitoredPredictionDecision struct {
+	decision       models.PredictionDecision
+	scene          string
+	monitorMode    string
+	previousAction string
+}
+
 func NewPredictionAlertService() *PredictionAlertService {
 	return &PredictionAlertService{
 		engine: NewAlertEngine(),
@@ -40,9 +46,14 @@ func (s *PredictionAlertService) ScanRealtimeAlerts(sendNotification bool) (*Pre
 		return nil, err
 	}
 
-	decisions := s.latestDecisionsByStock(500)
+	decisions := s.latestMonitoredDecisionsByStock(500)
 	result := &PredictionAlertScanResult{Scanned: len(decisions)}
 	if len(decisions) == 0 {
+		resolved, err := s.resolveInactiveLogs(map[string]struct{}{})
+		if err != nil {
+			return nil, err
+		}
+		result.Resolved = resolved
 		return result, nil
 	}
 
@@ -51,7 +62,8 @@ func (s *PredictionAlertService) ScanRealtimeAlerts(sendNotification bool) (*Pre
 	activeKeys := make(map[string]struct{})
 	created := make([]models.PredictionAlertLog, 0)
 
-	for _, decision := range decisions {
+	for _, monitored := range decisions {
+		decision := monitored.decision
 		if quote, ok := quotes[normalizeAlertStockCode(decision.StockCode)]; ok {
 			if quote.price > 0 {
 				decision.CurrentPrice = quote.price
@@ -61,7 +73,8 @@ func (s *PredictionAlertService) ScanRealtimeAlerts(sendNotification bool) (*Pre
 			}
 		}
 
-		alerts := s.engine.EvaluateDecision(decision)
+		alerts := s.engine.EvaluateDecisionForScene(decision, monitored.scene, monitored.monitorMode)
+		alerts = append(alerts, s.engine.EvaluateAdviceChange(decision, monitored.scene, monitored.monitorMode, monitored.previousAction)...)
 		result.Generated += len(alerts)
 		for _, alert := range alerts {
 			key := liveAlertKey(alert)
@@ -69,26 +82,29 @@ func (s *PredictionAlertService) ScanRealtimeAlerts(sendNotification bool) (*Pre
 				continue
 			}
 			activeKeys[key] = struct{}{}
-			if s.recentlyAlerted(key, now) {
+			if s.recentlyAlerted(key) {
 				continue
 			}
 
 			log := models.PredictionAlertLog{
-				AlertKey:       key,
-				SessionID:      decision.SessionID,
-				DecisionID:     decision.ID,
-				StockCode:      decision.StockCode,
-				StockName:      alert.StockName,
-				AlertType:      alert.Reason,
-				Level:          normalizeAlertLevel(alert.Level),
-				Title:          alert.Title,
-				Message:        alert.Message,
-				TriggerPrice:   alert.Price,
-				ThresholdPrice: alert.ThresholdPrice,
-				Status:         "new",
-				Channel:        "app",
-				Reason:         alert.Reason,
-				TriggeredAt:    now,
+				AlertKey:        key,
+				SessionID:       decision.SessionID,
+				DecisionID:      decision.ID,
+				StockCode:       decision.StockCode,
+				StockName:       alert.StockName,
+				AlertType:       alert.Reason,
+				Level:           normalizeAlertLevel(alert.Level),
+				Title:           alert.Title,
+				Message:         alert.Message,
+				TriggerPrice:    alert.Price,
+				ThresholdPrice:  alert.ThresholdPrice,
+				SuggestedAction: alert.SuggestedAction,
+				Scene:           alert.Scene,
+				MonitorMode:     alert.MonitorMode,
+				Status:          "new",
+				Channel:         "app",
+				Reason:          alert.Reason,
+				TriggeredAt:     now,
 			}
 			if sendNotification && data.NewAlertWindowsApi("go-stock AI预测提醒", log.Title, log.Message, "").SendNotification() {
 				sentAt := time.Now()
@@ -126,7 +142,7 @@ func (s *PredictionAlertService) GetAlertLogs(limit int, status string) []models
 		limit = 500
 	}
 
-	query := db.Dao.Model(&models.PredictionAlertLog{})
+	query := db.Dao.Model(&models.PredictionAlertLog{}).Where("status <> ?", "ignored")
 	status = strings.TrimSpace(strings.ToLower(status))
 	if status != "" && status != "all" {
 		query = query.Where("status = ?", status)
@@ -154,7 +170,7 @@ func (s *PredictionAlertService) MarkAlertStatus(id uint, status string) error {
 	return db.Dao.Model(&models.PredictionAlertLog{}).Where("id = ?", id).Updates(updates).Error
 }
 
-func (s *PredictionAlertService) latestDecisionsByStock(limit int) []models.PredictionDecision {
+func (s *PredictionAlertService) latestMonitoredDecisionsByStock(limit int) []monitoredPredictionDecision {
 	cutoff := time.Now().AddDate(0, 0, -predictionAlertLookbackDays)
 	var rows []models.PredictionDecision
 	db.Dao.Where("created_at >= ?", cutoff).
@@ -162,7 +178,7 @@ func (s *PredictionAlertService) latestDecisionsByStock(limit int) []models.Pred
 		Limit(limit).
 		Find(&rows)
 
-	result := make([]models.PredictionDecision, 0, len(rows))
+	result := make([]monitoredPredictionDecision, 0, len(rows))
 	seen := make(map[string]struct{}, len(rows))
 	for _, row := range rows {
 		key := normalizeAlertStockCode(row.StockCode)
@@ -172,10 +188,53 @@ func (s *PredictionAlertService) latestDecisionsByStock(limit int) []models.Pred
 		if _, ok := seen[key]; ok {
 			continue
 		}
+		scene, mode, monitored := s.monitorContext(row.SessionID)
+		if !monitored {
+			continue
+		}
 		seen[key] = struct{}{}
-		result = append(result, row)
+		result = append(result, monitoredPredictionDecision{
+			decision:       row,
+			scene:          scene,
+			monitorMode:    mode,
+			previousAction: s.previousMonitoredAction(row),
+		})
 	}
 	return result
+}
+
+func (s *PredictionAlertService) monitorContext(sessionID uint) (string, string, bool) {
+	var session models.PredictionSession
+	if err := db.Dao.First(&session, sessionID).Error; err != nil || session.Status != "done" {
+		return "", "", false
+	}
+	var formalCount int64
+	var watchCount int64
+	db.Dao.Model(&models.PredictionHypothesis{}).
+		Where("session_id = ? AND status = ?", sessionID, "active").Count(&formalCount)
+	db.Dao.Model(&models.PredictionHypothesis{}).
+		Where("session_id = ? AND status = ?", sessionID, "watch").Count(&watchCount)
+	if formalCount == 0 && watchCount == 0 {
+		return "", "", false
+	}
+	if formalCount > 0 {
+		return session.Scene, "active", true
+	}
+	return session.Scene, "watch", true
+}
+
+func (s *PredictionAlertService) previousMonitoredAction(current models.PredictionDecision) string {
+	var rows []models.PredictionDecision
+	db.Dao.Where("id <> ? AND stock_code IN ?", current.ID, stockCodeVariants(current.StockCode)).
+		Order("created_at desc, id desc").
+		Limit(50).
+		Find(&rows)
+	for _, row := range rows {
+		if _, _, monitored := s.monitorContext(row.SessionID); monitored {
+			return row.Action
+		}
+	}
+	return ""
 }
 
 type alertQuoteSnapshot struct {
@@ -183,11 +242,12 @@ type alertQuoteSnapshot struct {
 	name  string
 }
 
-func (s *PredictionAlertService) refreshRealtimeQuotes(decisions []models.PredictionDecision) map[string]alertQuoteSnapshot {
+func (s *PredictionAlertService) refreshRealtimeQuotes(decisions []monitoredPredictionDecision) map[string]alertQuoteSnapshot {
 	result := make(map[string]alertQuoteSnapshot, len(decisions))
 	codes := make([]string, 0, len(decisions))
 	seen := make(map[string]struct{}, len(decisions))
-	for _, decision := range decisions {
+	for _, monitored := range decisions {
+		decision := monitored.decision
 		code := normalizeAlertStockCode(decision.StockCode)
 		if code == "" {
 			continue
@@ -224,7 +284,7 @@ func (s *PredictionAlertService) refreshRealtimeQuotes(decisions []models.Predic
 	return result
 }
 
-func (s *PredictionAlertService) recentlyAlerted(alertKey string, now time.Time) bool {
+func (s *PredictionAlertService) recentlyAlerted(alertKey string) bool {
 	var latest models.PredictionAlertLog
 	err := db.Dao.Where("alert_key = ?", alertKey).
 		Order("triggered_at desc, id desc").
@@ -239,7 +299,7 @@ func (s *PredictionAlertService) recentlyAlerted(alertKey string, now time.Time)
 	if latest.Status == "resolved" {
 		return false
 	}
-	return now.Sub(latest.TriggeredAt) < predictionAlertDedupWindow
+	return true
 }
 
 func (s *PredictionAlertService) resolveInactiveLogs(activeKeys map[string]struct{}) (int, error) {
@@ -272,7 +332,7 @@ func liveAlertKey(alert PredictionAlert) string {
 	if code == "" || reason == "" {
 		return ""
 	}
-	return fmt.Sprintf("prediction_live:%s:%s", code, reason)
+	return fmt.Sprintf("prediction_live:%s:%d:%s", code, alert.DecisionID, reason)
 }
 
 func normalizeAlertStockCode(code string) string {

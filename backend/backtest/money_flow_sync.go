@@ -16,12 +16,14 @@ import (
 )
 
 type MoneyFlowSyncResult struct {
-	StockCount   int `json:"stockCount"`
-	FlowRows     int `json:"flowRows"`
-	SectorRows   int `json:"sectorRows"`
-	ConceptRows  int `json:"conceptRows"`
-	MacRows      int `json:"macRows"`
-	FailedStocks int `json:"failedStocks"`
+	StockCount      int `json:"stockCount"`
+	FlowRows        int `json:"flowRows"`
+	SectorRows      int `json:"sectorRows"`
+	ConceptRows     int `json:"conceptRows"`
+	MacRows         int `json:"macRows"`
+	FailedStocks    int `json:"failedStocks"`
+	PartialStocks   int `json:"partialStocks"`
+	HistoricalIssue int `json:"historicalIssue"`
 }
 
 func (s *FeatureSyncService) SyncMoneyFlows(stockCodes []string, days int) (*MoneyFlowSyncResult, error) {
@@ -39,6 +41,14 @@ func (s *FeatureSyncService) SyncMoneyFlows(stockCodes []string, days int) (*Mon
 	for _, code := range uniqueStrings(stockCodes) {
 		rows, macRows, err := s.SyncStockMoneyFlow(code, days)
 		if err != nil {
+			if macRows > 0 {
+				result.StockCount++
+				result.MacRows += macRows
+				result.PartialStocks++
+				result.HistoricalIssue++
+				logger.SugaredLogger.Warnf("sync money flow for %s partially available: %v", code, err)
+				continue
+			}
 			result.FailedStocks++
 			logger.SugaredLogger.Warnf("sync money flow for %s error: %v", code, err)
 			continue
@@ -63,7 +73,13 @@ func (s *FeatureSyncService) SyncStockMoneyFlow(stockCode string, days int) (int
 	}
 	rows := data.NewStockDataApi().GetStockHistoryMoneyData(code)
 	if len(rows) == 0 {
-		return 0, syncMACMoneyFlow(code), nil
+		// EastMoney occasionally returns an empty response transiently. Retry once
+		// before marking the historical source as unavailable.
+		rows = data.NewStockDataApi().GetStockHistoryMoneyData(code)
+	}
+	if len(rows) == 0 {
+		macRows := syncMACMoneyFlow(code)
+		return 0, macRows, fmt.Errorf("东方财富历史资金流暂无数据")
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Date < rows[j].Date })
 	if days > 0 && len(rows) > days {

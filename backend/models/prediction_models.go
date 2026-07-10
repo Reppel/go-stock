@@ -91,6 +91,10 @@ type PredictionDecision struct {
 	ReasonsJSON           string    `json:"reasonsJson" gorm:"type:text" md:"原因JSON"`
 	RisksJSON             string    `json:"risksJson" gorm:"type:text" md:"风险JSON"`
 	SampleWarning         bool      `json:"sampleWarning" md:"样本不足"`
+	PoolSampleCount       int       `json:"poolSampleCount" md:"股票池回测样本数"`
+	StockSampleCount      int       `json:"stockSampleCount" md:"单股回测样本数"`
+	SampleSummaryJSON     string    `json:"sampleSummaryJson" gorm:"type:text" md:"样本摘要JSON"`
+	DataStatusJSON        string    `json:"dataStatusJson" gorm:"type:text" md:"数据就绪状态JSON"`
 	FeatureVersion        string    `json:"featureVersion" gorm:"size:50" md:"特征版本"`
 	DataAsOf              time.Time `json:"dataAsOf" md:"数据截至"`
 	Status                string    `json:"status" gorm:"size:20;index" md:"状态"` // draft/watch/resolved
@@ -103,26 +107,29 @@ func (PredictionDecision) TableName() string {
 
 // PredictionAlertLog AI 预测工厂盘中提醒事件。
 type PredictionAlertLog struct {
-	ID             uint       `json:"id" gorm:"primarykey" md:"-"`
-	AlertKey       string     `json:"alertKey" gorm:"size:160;index" md:"提醒键"`
-	SessionID      uint       `json:"sessionId" gorm:"index" md:"会话ID"`
-	DecisionID     uint       `json:"decisionId" gorm:"index" md:"决策ID"`
-	StockCode      string     `json:"stockCode" gorm:"size:20;index" md:"股票代码"`
-	StockName      string     `json:"stockName" gorm:"size:50" md:"股票名称"`
-	AlertType      string     `json:"alertType" gorm:"size:40;index" md:"提醒类型"`
-	Level          string     `json:"level" gorm:"size:20;index" md:"提醒级别"`
-	Title          string     `json:"title" gorm:"size:120" md:"标题"`
-	Message        string     `json:"message" gorm:"type:text" md:"内容"`
-	TriggerPrice   float64    `json:"triggerPrice" md:"触发价格"`
-	ThresholdPrice float64    `json:"thresholdPrice" md:"阈值价格"`
-	Status         string     `json:"status" gorm:"size:20;index" md:"状态"` // new/sent/read/ignored/resolved
-	Channel        string     `json:"channel" gorm:"size:30" md:"渠道"`      // app/windows
-	Reason         string     `json:"reason" gorm:"size:60" md:"原因"`
-	TriggeredAt    time.Time  `json:"triggeredAt" gorm:"index" md:"触发时间"`
-	SentAt         *time.Time `json:"sentAt" md:"发送时间"`
-	ReadAt         *time.Time `json:"readAt" md:"读取时间"`
-	CreatedAt      time.Time  `json:"createdAt" gorm:"autoCreateTime" md:"-"`
-	UpdatedAt      time.Time  `json:"updatedAt" gorm:"autoUpdateTime" md:"-"`
+	ID              uint       `json:"id" gorm:"primarykey" md:"-"`
+	AlertKey        string     `json:"alertKey" gorm:"size:160;index" md:"提醒键"`
+	SessionID       uint       `json:"sessionId" gorm:"index" md:"会话ID"`
+	DecisionID      uint       `json:"decisionId" gorm:"index" md:"决策ID"`
+	StockCode       string     `json:"stockCode" gorm:"size:20;index" md:"股票代码"`
+	StockName       string     `json:"stockName" gorm:"size:50" md:"股票名称"`
+	AlertType       string     `json:"alertType" gorm:"size:40;index" md:"提醒类型"`
+	Level           string     `json:"level" gorm:"size:20;index" md:"提醒级别"`
+	Title           string     `json:"title" gorm:"size:120" md:"标题"`
+	Message         string     `json:"message" gorm:"type:text" md:"内容"`
+	TriggerPrice    float64    `json:"triggerPrice" md:"触发价格"`
+	ThresholdPrice  float64    `json:"thresholdPrice" md:"阈值价格"`
+	SuggestedAction string     `json:"suggestedAction" gorm:"size:20;index" md:"建议动作"`
+	Scene           string     `json:"scene" gorm:"size:50;index" md:"投资场景"`
+	MonitorMode     string     `json:"monitorMode" gorm:"size:20;index" md:"监控类型"`
+	Status          string     `json:"status" gorm:"size:20;index" md:"状态"` // new/sent/read/ignored/resolved
+	Channel         string     `json:"channel" gorm:"size:30" md:"渠道"`      // app/windows
+	Reason          string     `json:"reason" gorm:"size:60" md:"原因"`
+	TriggeredAt     time.Time  `json:"triggeredAt" gorm:"index" md:"触发时间"`
+	SentAt          *time.Time `json:"sentAt" md:"发送时间"`
+	ReadAt          *time.Time `json:"readAt" md:"读取时间"`
+	CreatedAt       time.Time  `json:"createdAt" gorm:"autoCreateTime" md:"-"`
+	UpdatedAt       time.Time  `json:"updatedAt" gorm:"autoUpdateTime" md:"-"`
 }
 
 func (PredictionAlertLog) TableName() string {

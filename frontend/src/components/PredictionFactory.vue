@@ -28,6 +28,7 @@ import {
 import {
   AddTradingRecord,
   CreatePredictionSession,
+  RecalculatePredictionSession,
   GetPredictionSession,
   GetPredictionSessions,
   GetMyPredictionHypotheses,
@@ -81,6 +82,7 @@ const form = ref({
 
 const message = useMessage()
 const loading = ref(false)
+const recalculateLoading = ref(false)
 const syncLoading = ref(false)
 const aiConfigOptions = ref([])
 const aiConfigLoading = ref(false)
@@ -171,7 +173,9 @@ const sortedRecentSessions = computed(() => sortLatestFirst(recentSessions.value
 const pagedRecentSessions = computed(() => paginate(sortedRecentSessions.value, historyPage.value))
 const sortedMyHypotheses = computed(() => sortLatestFirst(myHypotheses.value))
 const pagedMyHypotheses = computed(() => paginate(sortedMyHypotheses.value, monitorPage.value))
-const sortedAlertRows = computed(() => sortLatestFirst(alertRows.value))
+const sortedAlertRows = computed(() => sortLatestFirst(
+  (alertRows.value || []).filter(row => String(row?.status || '').toLowerCase() !== 'ignored')
+))
 const pagedAlertRows = computed(() => paginate(sortedAlertRows.value, alertPage.value))
 
 async function loadAiConfigs() {
@@ -459,6 +463,26 @@ async function generatePredictions() {
   }
 }
 
+async function recalculateCurrentSession() {
+  const sessionId = Number(sessionResult.value?.session?.id || 0)
+  if (!sessionId) return
+  recalculateLoading.value = true
+  try {
+    const res = await RecalculatePredictionSession(sessionId)
+    if (res.code !== 1) {
+      message.error(res.msg || '重新回测失败')
+      return
+    }
+    sessionResult.value = res.data
+    await Promise.all([loadMyHypotheses(), loadPredictionAlerts()])
+    message.success('重新回测完成')
+  } catch (err) {
+    message.error('重新回测失败: ' + (err?.message || String(err)))
+  } finally {
+    recalculateLoading.value = false
+  }
+}
+
 function resolveScope(showWarning = true) {
   let scope = form.value.stockScope
   if (scope === 'stock') {
@@ -719,6 +743,17 @@ function alertStatusText(status) {
   return map[status] || status || '未知'
 }
 
+function alertThresholdText(row) {
+  const threshold = Number(row?.thresholdPrice || 0)
+  if (threshold > 0) return `阈值 ${formatPrice(threshold)}`
+  return '资金流条件触发'
+}
+
+function alertActionText(action) {
+  const map = {BUY: '买入', ADD: '加仓', HOLD: '持有', WATCH: '观察', REDUCE: '减仓', SELL: '卖出'}
+  return map[String(action || '').toUpperCase()] || action || '-'
+}
+
 function alertStatusType(status) {
   if (status === 'new') return 'warning'
   if (status === 'sent') return 'info'
@@ -762,6 +797,21 @@ function capitalFlowText(raw) {
   return levelMap[flow.level] || flow.level || ''
 }
 
+function sampleSummaryText(decision) {
+  const rows = parseJsonList(decision?.sampleSummaryJson || decision?.sampleSummaryJSON)
+  return rows
+    .filter(row => row.entryMatched || row.exitMatched)
+    .map(row => `${row.strategyName || '策略'}：股票池${row.poolSamples || 0}笔/单股${row.stockSamples || 0}笔`)
+    .join('；')
+}
+
+function dataStatusText(decision) {
+  const status = parseJsonObject(decision?.dataStatusJson || decision?.dataStatusJSON)
+  if (!status) return ''
+  const flowRows = Number(status.moneyFlowRows || 0)
+  return `特征 ${status.featureStartDate || '-'} 至 ${status.featureEndDate || '-'}；资金流 ${flowRows} 天`
+}
+
 function backtestMetrics(h) {
   const payload = parseJsonObject(h?.backtestConfigJson || h?.backtestConfigJSON)
   return payload?.metrics || {}
@@ -790,7 +840,7 @@ function todayAlertCountForHypothesis(h) {
 }
 
 function monitorReady(h) {
-  return h.noLookaheadPassed && h.tradeCount >= 30 && h.maxDrawdown <= 0.2 && h.avgReturn > 0 && h.outSampleAvgReturn >= -0.02
+  return h.strategyVersion === 'strategy_v2' && h.noLookaheadPassed && h.tradeCount >= 30 && h.maxDrawdown <= 0.2 && h.avgReturn > 0 && h.outSampleAvgReturn >= -0.02
 }
 
 function formatDateTime(val) {
@@ -1047,6 +1097,12 @@ function formatDate(ts) {
                     <span v-if="capitalFlowText(d.capitalFlowJson)">
                       资金流：{{ capitalFlowText(d.capitalFlowJson) }}
                     </span>
+                    <span v-if="sampleSummaryText(d)">
+                      样本：{{ sampleSummaryText(d) }}
+                    </span>
+                    <span v-if="dataStatusText(d)">
+                      数据：{{ dataStatusText(d) }}
+                    </span>
                     <span v-if="parseJsonList(d.alertJson).length">
                       提醒：{{ parseJsonList(d.alertJson).map(a => alertTypeText(a.reason)).join('，') }}
                     </span>
@@ -1058,6 +1114,11 @@ function formatDate(ts) {
               </n-card>
 
               <n-card title="策略回测结果" size="small">
+                <template #header-extra>
+                  <n-button size="small" :loading="recalculateLoading" @click="recalculateCurrentSession">
+                    重新回测
+                  </n-button>
+                </template>
                 <n-space vertical>
               <n-card v-for="h in pagedBacktestHypotheses" :key="h.id" size="small">
                 <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -1209,6 +1270,9 @@ function formatDate(ts) {
                         <n-tag size="small" :type="alertLevelType(row.level)">
                           {{ alertTypeText(row.alertType) }}
                         </n-tag>
+                        <n-tag v-if="row.suggestedAction" size="small" type="info">
+                          建议 {{ alertActionText(row.suggestedAction) }}
+                        </n-tag>
                         <n-tag size="small" :type="alertStatusType(row.status)">
                           {{ alertStatusText(row.status) }}
                         </n-tag>
@@ -1217,7 +1281,7 @@ function formatDate(ts) {
                       <n-text depth="3">
                         {{ formatDateTime(row.triggeredAt) }}
                         · 当前 {{ formatPrice(row.triggerPrice) }}
-                        · 阈值 {{ formatPrice(row.thresholdPrice) }}
+                        · {{ alertThresholdText(row) }}
                       </n-text>
                     </n-space>
                     <n-space v-if="row.status !== 'resolved'" size="small">

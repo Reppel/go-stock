@@ -5,6 +5,12 @@ import (
 	"time"
 )
 
+const (
+	CurrentStrategyVersion  = "strategy_v2"
+	MinPoolStrategySamples  = 30
+	MinStockStrategySamples = 10
+)
+
 type QuantSignalSide string
 
 const (
@@ -172,17 +178,42 @@ type DecisionContext struct {
 	Holding    holdingSnapshot
 }
 
+type StrategySampleSummary struct {
+	HypothesisID uint   `json:"hypothesisId"`
+	StrategyName string `json:"strategyName"`
+	PoolSamples  int    `json:"poolSamples"`
+	StockSamples int    `json:"stockSamples"`
+	EntryMatched bool   `json:"entryMatched"`
+	ExitMatched  bool   `json:"exitMatched"`
+	SampleReady  bool   `json:"sampleReady"`
+}
+
+type DecisionDataStatus struct {
+	FeatureRows        int64    `json:"featureRows"`
+	FeatureStartDate   string   `json:"featureStartDate"`
+	FeatureEndDate     string   `json:"featureEndDate"`
+	FeatureAdjusted    bool     `json:"featureAdjusted"`
+	MoneyFlowRows      int64    `json:"moneyFlowRows"`
+	MoneyFlowStartDate string   `json:"moneyFlowStartDate"`
+	MoneyFlowEndDate   string   `json:"moneyFlowEndDate"`
+	MoneyFlowReady     bool     `json:"moneyFlowReady"`
+	Warnings           []string `json:"warnings"`
+}
+
 type PredictionAlert struct {
-	Key            string    `json:"key"`
-	SessionID      uint      `json:"sessionId"`
-	DecisionID     uint      `json:"decisionId"`
-	StockCode      string    `json:"stockCode"`
-	StockName      string    `json:"stockName"`
-	Level          string    `json:"level"`
-	Title          string    `json:"title"`
-	Message        string    `json:"message"`
-	Reason         string    `json:"reason"`
-	Price          float64   `json:"price"`
-	ThresholdPrice float64   `json:"thresholdPrice"`
-	CreatedAt      time.Time `json:"createdAt"`
+	Key             string    `json:"key"`
+	SessionID       uint      `json:"sessionId"`
+	DecisionID      uint      `json:"decisionId"`
+	StockCode       string    `json:"stockCode"`
+	StockName       string    `json:"stockName"`
+	Level           string    `json:"level"`
+	Title           string    `json:"title"`
+	Message         string    `json:"message"`
+	Reason          string    `json:"reason"`
+	SuggestedAction string    `json:"suggestedAction"`
+	Scene           string    `json:"scene"`
+	MonitorMode     string    `json:"monitorMode"`
+	Price           float64   `json:"price"`
+	ThresholdPrice  float64   `json:"thresholdPrice"`
+	CreatedAt       time.Time `json:"createdAt"`
 }

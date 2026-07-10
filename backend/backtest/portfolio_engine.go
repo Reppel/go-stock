@@ -139,7 +139,7 @@ func (p *PortfolioEngine) RunBacktest(
 				Slippage:        fill.SlippageCost,
 				ReturnRate:      returnRate,
 				MaxReturn:       safeReturn(pos.MaxPrice, pos.EntryPrice),
-				MaxDrawdown:     safeReturn(pos.EntryPrice, pos.MinPrice),
+				MaxDrawdown:     tradeMaxDrawdown(pos.EntryPrice, pos.MinPrice),
 				HoldDays:        i - pos.BuyDayIndex,
 				ExitReason:      assessment.ExitReason,
 				EntryReasonJSON: pos.EntryReasonJSON,
@@ -209,7 +209,7 @@ func (p *PortfolioEngine) RunBacktest(
 			Slippage:        fill.SlippageCost,
 			ReturnRate:      returnRate,
 			MaxReturn:       safeReturn(pos.MaxPrice, pos.EntryPrice),
-			MaxDrawdown:     safeReturn(pos.EntryPrice, pos.MinPrice),
+			MaxDrawdown:     tradeMaxDrawdown(pos.EntryPrice, pos.MinPrice),
 			HoldDays:        len(tradingDays) - 1 - pos.BuyDayIndex,
 			ExitReason:      "end_of_period",
 			EntryReasonJSON: pos.EntryReasonJSON,
@@ -289,4 +289,12 @@ func safeReturn(newPrice float64, basePrice float64) float64 {
 		return 0
 	}
 	return (newPrice - basePrice) / basePrice
+}
+
+func tradeMaxDrawdown(entryPrice float64, minPrice float64) float64 {
+	if entryPrice <= 0 || minPrice <= 0 || minPrice >= entryPrice {
+		return 0
+	}
+	drawdown := (entryPrice - minPrice) / entryPrice
+	return clamp(drawdown, 0, 1)
 }

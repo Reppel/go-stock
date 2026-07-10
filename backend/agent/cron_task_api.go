@@ -542,8 +542,8 @@ func (a *CronTaskApi) executePredictionSyncMoneyFlow(ctx context.Context, task *
 	if err != nil {
 		return err
 	}
-	logger.SugaredLogger.Infof("预测工厂资金流同步完成：股票 %d，资金流 %d，MAC %d，行业 %d，概念 %d，失败 %d",
-		result.StockCount, result.FlowRows, result.MacRows, result.SectorRows, result.ConceptRows, result.FailedStocks)
+	logger.SugaredLogger.Infof("预测工厂资金流同步完成：股票 %d，资金流 %d，MAC %d，行业 %d，概念 %d，失败 %d，部分历史缺失 %d",
+		result.StockCount, result.FlowRows, result.MacRows, result.SectorRows, result.ConceptRows, result.FailedStocks, result.PartialStocks)
 	return nil
 }
 

@@ -387,6 +387,8 @@ export function ReFleshTelegraphList(arg1:string):Promise<any>;
 
 export function RebuildPredictionFeatureView(arg1:Record<string, any>):Promise<Record<string, any>>;
 
+export function RecalculatePredictionSession(arg1:number):Promise<Record<string, any>>;
+
 export function RefreshMarketFactors(arg1:string):Promise<string>;
 
 export function RemoveGroup(arg1:number):Promise<string>;

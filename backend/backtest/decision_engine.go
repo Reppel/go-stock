@@ -61,13 +61,19 @@ func (e *DecisionEngine) Build(ctx DecisionContext) models.PredictionDecision {
 	exitMatchedCount := 0
 	positiveMatchedCount := 0
 	negativeStrategyCount := 0
-	sampleWarning := false
 	noLookaheadOK := true
 	bestTargetReturn := 0.01
 	bestRuleStopLoss := 0.03
 	matchedFacts := make([]matchedStrategyFact, 0, len(ctx.Hypotheses))
+	sampleSummaries := make([]StrategySampleSummary, 0, len(ctx.Hypotheses))
 	reasons := make([]string, 0, 10)
 	risks := make([]string, 0, 10)
+	stockTradeCounts := loadStockTradeCounts(ctx.Hypotheses, f.StockCode)
+	poolSampleCount := 0
+	stockSampleCount := 0
+	anySampleReady := false
+	relevantStrategyCount := 0
+	relevantSampleReady := false
 
 	for _, h := range ctx.Hypotheses {
 		var rule Rule
@@ -77,8 +83,18 @@ func (e *DecisionEngine) Build(ctx DecisionContext) models.PredictionDecision {
 		entryMatched := e.strategy.MatchConditions(rule.EntryConditions, f)
 		exitMatched := e.strategy.MatchConditions(rule.ExitConditions, f)
 		monitorReady := hypothesisMonitorReady(h)
-		if h.TradeCount < 30 {
-			sampleWarning = true
+		stockSamples := stockTradeCounts[h.ID]
+		sampleReady := h.TradeCount >= MinPoolStrategySamples && stockSamples >= MinStockStrategySamples
+		poolSampleCount += h.TradeCount
+		stockSampleCount += stockSamples
+		if sampleReady {
+			anySampleReady = true
+		}
+		if entryMatched || exitMatched {
+			relevantStrategyCount++
+			if sampleReady {
+				relevantSampleReady = true
+			}
 		}
 		if !h.NoLookaheadPassed {
 			noLookaheadOK = false
@@ -107,7 +123,7 @@ func (e *DecisionEngine) Build(ctx DecisionContext) models.PredictionDecision {
 			} else {
 				score -= 4
 			}
-			if h.TradeCount < 10 {
+			if !sampleReady {
 				score -= 4
 			}
 			reasons = append(reasons, fmt.Sprintf("命中策略「%s」入场条件", h.Name))
@@ -121,16 +137,32 @@ func (e *DecisionEngine) Build(ctx DecisionContext) models.PredictionDecision {
 			score -= 3
 		}
 		matchedFacts = append(matchedFacts, matchedStrategyFact{
-			ID:           h.ID,
-			Name:         h.Name,
+			ID:              h.ID,
+			Name:            h.Name,
+			EntryMatched:    entryMatched,
+			ExitMatched:     exitMatched,
+			WinRate:         h.WinRate,
+			AvgReturn:       h.AvgReturn,
+			MaxDrawdown:     h.MaxDrawdown,
+			TradeCount:      h.TradeCount,
+			PoolTradeCount:  h.TradeCount,
+			StockTradeCount: stockSamples,
+			SampleReady:     sampleReady,
+			MonitorReady:    monitorReady,
+		})
+		sampleSummaries = append(sampleSummaries, StrategySampleSummary{
+			HypothesisID: h.ID,
+			StrategyName: h.Name,
+			PoolSamples:  h.TradeCount,
+			StockSamples: stockSamples,
 			EntryMatched: entryMatched,
 			ExitMatched:  exitMatched,
-			WinRate:      h.WinRate,
-			AvgReturn:    h.AvgReturn,
-			MaxDrawdown:  h.MaxDrawdown,
-			TradeCount:   h.TradeCount,
-			MonitorReady: monitorReady,
+			SampleReady:  sampleReady,
 		})
+	}
+	sampleWarning := !anySampleReady
+	if relevantStrategyCount > 0 {
+		sampleWarning = !relevantSampleReady
 	}
 
 	if f.MA20 > 0 && f.Close < f.MA20 && f.MACD < 0 {
@@ -156,9 +188,11 @@ func (e *DecisionEngine) Build(ctx DecisionContext) models.PredictionDecision {
 	score += capitalFlow.ScoreAdjustment
 	reasons = append(reasons, capitalFlow.Reasons...)
 	risks = append(risks, capitalFlow.Risks...)
+	dataStatus := loadDecisionDataStatus(ctx.Session, f)
+	risks = append(risks, dataStatus.Warnings...)
 
 	if sampleWarning {
-		risks = append(risks, "回测交易样本少于30笔，仅适合保存观察")
+		risks = append(risks, fmt.Sprintf("当前股票有效回测样本不足：单策略至少需要股票池%d笔且单股%d笔", MinPoolStrategySamples, MinStockStrategySamples))
 	}
 	if !noLookaheadOK {
 		risks = append(risks, "存在未通过未来函数检查的策略，不允许作为正式依据")
@@ -176,7 +210,7 @@ func (e *DecisionEngine) Build(ctx DecisionContext) models.PredictionDecision {
 		profitRate = (currentPrice - costPrice) / costPrice
 	}
 
-	risk := e.risk.EvaluateCurrent(hasPosition, currentPrice, costPrice, bestRuleStopLoss, bestTargetReturn, score, sampleWarning || !noLookaheadOK)
+	risk := e.risk.EvaluateCurrent(hasPosition, currentPrice, costPrice, bestRuleStopLoss, bestTargetReturn, score, sampleWarning || !noLookaheadOK, ctx.Session.Scene)
 	reasons = append(reasons, risk.Reasons...)
 	risks = append(risks, risk.Warnings...)
 
@@ -202,7 +236,7 @@ func (e *DecisionEngine) Build(ctx DecisionContext) models.PredictionDecision {
 		positionAdvice = fmt.Sprintf("%s，约%d股/份，参考金额%.2f", positionAdvice, sizing.SuggestedQuantity, sizing.SuggestedAmount)
 	}
 
-	quality := decisionQualityRating(ctx.Hypotheses, sampleWarning, noLookaheadOK)
+	quality := decisionQualityRating(ctx.Hypotheses, stockSampleCount, sampleWarning, noLookaheadOK)
 	confidence := decisionConfidence(score, sampleWarning || !noLookaheadOK)
 
 	matchedJSON, _ := json.Marshal(matchedFacts)
@@ -210,6 +244,8 @@ func (e *DecisionEngine) Build(ctx DecisionContext) models.PredictionDecision {
 	risksJSON, _ := json.Marshal(uniqueStrings(risks))
 	sizingJSON, _ := json.Marshal(sizing)
 	capitalJSON, _ := json.Marshal(capitalFlow)
+	sampleSummaryJSON, _ := json.Marshal(sampleSummaries)
+	dataStatusJSON, _ := json.Marshal(dataStatus)
 
 	decision := models.PredictionDecision{
 		SessionID:             ctx.Session.ID,
@@ -244,35 +280,37 @@ func (e *DecisionEngine) Build(ctx DecisionContext) models.PredictionDecision {
 		ReasonsJSON:           string(reasonsJSON),
 		RisksJSON:             string(risksJSON),
 		SampleWarning:         sampleWarning || !noLookaheadOK,
+		PoolSampleCount:       poolSampleCount,
+		StockSampleCount:      stockSampleCount,
+		SampleSummaryJSON:     string(sampleSummaryJSON),
+		DataStatusJSON:        string(dataStatusJSON),
 		FeatureVersion:        f.FeatureVersion,
 		DataAsOf:              dataAsOf,
 		Status:                "draft",
 	}
-	alerts := e.alerts.EvaluateDecision(decision)
+	alerts := e.alerts.EvaluateDecisionForScene(decision, ctx.Session.Scene, "draft")
 	alertJSON, _ := json.Marshal(alerts)
 	decision.AlertJSON = string(alertJSON)
 	return decision
 }
 
-func decisionQualityRating(hypotheses []models.PredictionHypothesis, sampleWarning bool, noLookaheadOK bool) string {
+func decisionQualityRating(hypotheses []models.PredictionHypothesis, stockSampleCount int, sampleWarning bool, noLookaheadOK bool) string {
 	if !noLookaheadOK {
 		return "blocked"
 	}
 	if len(hypotheses) == 0 || sampleWarning {
 		return "observe"
 	}
-	totalTrades := 0
 	positive := 0
 	for _, h := range hypotheses {
-		totalTrades += h.TradeCount
 		if h.AvgReturn > 0 && h.WinRate >= 0.5 && h.MaxDrawdown <= 0.20 {
 			positive++
 		}
 	}
-	if totalTrades >= 60 && positive > 0 {
+	if stockSampleCount >= 30 && positive > 0 {
 		return "reference"
 	}
-	if totalTrades >= 30 {
+	if stockSampleCount >= MinStockStrategySamples {
 		return "observe"
 	}
 	return "weak"

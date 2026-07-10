@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"go-stock/backend/backtest"
 	"go-stock/backend/data"
@@ -23,7 +24,27 @@ func NewCronTaskApi() *CronTaskApi {
 	return &CronTaskApi{}
 }
 
+func (a *CronTaskApi) normalizeTask(task *models.CronTask) {
+	if task == nil {
+		return
+	}
+	if task.Module == "" {
+		task.Module = "user"
+	}
+	if task.Owner == "" {
+		task.Owner = "user"
+	}
+	if !task.IsSystem {
+		task.Visible = true
+		task.AllowDelete = true
+	}
+	if task.Status == "" {
+		task.Status = "active"
+	}
+}
+
 func (a *CronTaskApi) Create(task *models.CronTask) error {
+	a.normalizeTask(task)
 	return db.Dao.Create(task).Error
 }
 
@@ -32,15 +53,34 @@ func (a *CronTaskApi) Update(task *models.CronTask) error {
 		return fmt.Errorf("无效的任务ID")
 	}
 
+	var existing models.CronTask
+	if err := db.Dao.First(&existing, task.ID).Error; err != nil {
+		return err
+	}
+	if existing.IsSystem && !existing.AllowDelete {
+		task.Module = existing.Module
+		task.IsSystem = existing.IsSystem
+		task.Visible = existing.Visible
+		task.AllowDelete = existing.AllowDelete
+		task.Owner = existing.Owner
+	} else {
+		a.normalizeTask(task)
+	}
+
 	updates := map[string]any{
-		"name":        task.Name,
-		"cron_expr":   task.CronExpr,
-		"task_type":   task.TaskType,
-		"target":      task.Target,
-		"params":      task.Params,
-		"enable":      task.Enable,
-		"status":      task.Status,
-		"description": task.Description,
+		"name":         task.Name,
+		"cron_expr":    task.CronExpr,
+		"task_type":    task.TaskType,
+		"target":       task.Target,
+		"params":       task.Params,
+		"enable":       task.Enable,
+		"status":       task.Status,
+		"description":  task.Description,
+		"module":       task.Module,
+		"is_system":    task.IsSystem,
+		"visible":      task.Visible,
+		"allow_delete": task.AllowDelete,
+		"owner":        task.Owner,
 	}
 
 	return db.Dao.Model(&models.CronTask{}).
@@ -49,6 +89,13 @@ func (a *CronTaskApi) Update(task *models.CronTask) error {
 }
 
 func (a *CronTaskApi) Delete(id uint) error {
+	var task models.CronTask
+	if err := db.Dao.First(&task, id).Error; err != nil {
+		return err
+	}
+	if task.IsSystem && !task.AllowDelete {
+		return fmt.Errorf("系统内置任务不允许删除，请使用禁用")
+	}
 	return db.Dao.Delete(&models.CronTask{}, id).Error
 }
 
@@ -75,6 +122,12 @@ func (a *CronTaskApi) List(query *models.CronTaskQuery) *models.CronTaskPageResp
 	}
 	if query.Status != "" {
 		dbQuery = dbQuery.Where("status = ?", query.Status)
+	}
+	if query.Module != "" {
+		dbQuery = dbQuery.Where("module = ?", query.Module)
+	}
+	if !query.IncludeSystem {
+		dbQuery = dbQuery.Where("COALESCE(is_system, ?) = ?", false, false)
 	}
 	if query.Enable != nil {
 		dbQuery = dbQuery.Where("enable = ?", *query.Enable)
@@ -115,6 +168,50 @@ func (a *CronTaskApi) ExistsByTaskType(taskType string) bool {
 	return count > 0
 }
 
+func (a *CronTaskApi) GetByTaskType(taskType string) (*models.CronTask, error) {
+	var task models.CronTask
+	if err := db.Dao.Where("task_type = ?", taskType).First(&task).Error; err != nil {
+		return nil, err
+	}
+	return &task, nil
+}
+
+func (a *CronTaskApi) EnsureSystemTask(task *models.CronTask) error {
+	if task == nil {
+		return fmt.Errorf("任务为空")
+	}
+	task.Module = "prediction_factory"
+	task.IsSystem = true
+	task.Visible = false
+	task.AllowDelete = false
+	task.Owner = "system"
+	if task.Status == "" {
+		task.Status = "active"
+	}
+
+	var existing models.CronTask
+	err := db.Dao.Where("task_type = ?", task.TaskType).First(&existing).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return db.Dao.Create(task).Error
+	}
+	if err != nil {
+		return err
+	}
+	return db.Dao.Model(&existing).Updates(map[string]any{
+		"name":         task.Name,
+		"cron_expr":    task.CronExpr,
+		"target":       task.Target,
+		"params":       task.Params,
+		"status":       task.Status,
+		"description":  task.Description,
+		"module":       task.Module,
+		"is_system":    task.IsSystem,
+		"visible":      task.Visible,
+		"allow_delete": task.AllowDelete,
+		"owner":        task.Owner,
+	}).Error
+}
+
 func (a *CronTaskApi) EnableTask(id uint, enable bool) error {
 	return db.Dao.Model(&models.CronTask{}).Where("id = ?", id).Updates(map[string]any{
 		"enable": enable,
@@ -136,9 +233,6 @@ func (a *CronTaskApi) GetTaskTypes() []lo.Tuple2[string, string] {
 		{A: "market_analysis", B: "市场分析"},
 		{A: "global_stock_index_cache", B: "全球指数缓存"},
 		{A: "stock_change_save", B: "异动数据保存"},
-		{A: "prediction_sync_features", B: "预测工厂-同步特征"},
-		{A: "prediction_scan_signals", B: "预测工厂-扫描信号"},
-		{A: "prediction_validate_signals", B: "预测工厂-验证信号"},
 	}
 }
 
@@ -220,8 +314,12 @@ func (a *CronTaskApi) executeTaskByType(ctx context.Context, task *models.CronTa
 		return a.executeStockChangeSave(ctx, task)
 	case "prediction_sync_features":
 		return a.executePredictionSyncFeatures(ctx, task)
+	case "prediction_sync_money_flow":
+		return a.executePredictionSyncMoneyFlow(ctx, task)
 	case "prediction_scan_signals":
 		return a.executePredictionScanSignals(ctx, task)
+	case "prediction_scan_alerts":
+		return a.executePredictionScanAlerts(ctx, task)
 	case "prediction_validate_signals":
 		return a.executePredictionValidateSignals(ctx, task)
 	case "custom":
@@ -414,18 +512,71 @@ func (a *CronTaskApi) executePredictionSyncFeatures(ctx context.Context, task *m
 		params.Days = 365
 	}
 
-	poolService := backtest.NewStockPoolService()
-	stockCodes := poolService.GetStockPool(params.StockScope)
-	if len(stockCodes) == 0 {
-		return fmt.Errorf("股票池为空：%s", params.StockScope)
+	_, err := backtest.NewFeatureSyncService().RunFeatureSync(params.StockScope, params.Days)
+	if err != nil {
+		return err
 	}
-	backtest.NewFeatureSyncService().SyncAllStockFeatures(stockCodes, params.Days)
+	return nil
+}
+
+func (a *CronTaskApi) executePredictionSyncMoneyFlow(ctx context.Context, task *models.CronTask) error {
+	logger.SugaredLogger.Infof("执行预测工厂资金流同步任务：%s", task.Name)
+	var params struct {
+		StockScope string `json:"stockScope"`
+		Days       int    `json:"days"`
+	}
+	if task.Params != "" {
+		if err := json.Unmarshal([]byte(task.Params), &params); err != nil {
+			logger.SugaredLogger.Errorf("解析任务参数失败：%v", err)
+			return err
+		}
+	}
+	if params.StockScope == "" {
+		params.StockScope = "自选股"
+	}
+	if params.Days <= 0 {
+		params.Days = 120
+	}
+	stockCodes := backtest.NewStockPoolService().GetStockPool(params.StockScope)
+	result, err := backtest.NewFeatureSyncService().SyncMoneyFlows(stockCodes, params.Days)
+	if err != nil {
+		return err
+	}
+	logger.SugaredLogger.Infof("预测工厂资金流同步完成：股票 %d，资金流 %d，MAC %d，行业 %d，概念 %d，失败 %d",
+		result.StockCount, result.FlowRows, result.MacRows, result.SectorRows, result.ConceptRows, result.FailedStocks)
 	return nil
 }
 
 func (a *CronTaskApi) executePredictionScanSignals(ctx context.Context, task *models.CronTask) error {
 	logger.SugaredLogger.Infof("执行预测工厂扫描信号任务：%s", task.Name)
 	backtest.NewPredictionService().ScanSignals()
+	return nil
+}
+
+func (a *CronTaskApi) executePredictionScanAlerts(ctx context.Context, task *models.CronTask) error {
+	logger.SugaredLogger.Infof("执行预测工厂盘中提醒任务：%s", task.Name)
+	if !isTradingTime() {
+		logger.SugaredLogger.Info("当前不在A股交易时间，跳过预测工厂盘中提醒")
+		return nil
+	}
+
+	params := struct {
+		SendNotification bool `json:"sendNotification"`
+	}{
+		SendNotification: true,
+	}
+	if task.Params != "" {
+		if err := json.Unmarshal([]byte(task.Params), &params); err != nil {
+			logger.SugaredLogger.Errorf("解析任务参数失败：%v", err)
+			return err
+		}
+	}
+	result, err := backtest.NewPredictionAlertService().ScanRealtimeAlerts(params.SendNotification)
+	if err != nil {
+		return err
+	}
+	logger.SugaredLogger.Infof("预测工厂盘中提醒扫描完成：扫描 %d，触发 %d，新增 %d，通知 %d，解除 %d",
+		result.Scanned, result.Generated, len(result.Alerts), result.Sent, result.Resolved)
 	return nil
 }
 

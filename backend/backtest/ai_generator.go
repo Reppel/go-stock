@@ -36,6 +36,7 @@ type Hypothesis struct {
 	Params       string  `json:"params"`
 	TimeHorizon  int     `json:"timeHorizon"`
 	TargetReturn float64 `json:"targetReturn"`
+	Source       string  `json:"source"`
 }
 
 // MarketContext 市场环境
@@ -239,6 +240,7 @@ func (g *AIGenerator) generateVariants(tpl HypothesisTemplate) []Hypothesis {
 		Params:       g.paramsToJSON(defaultParams),
 		TimeHorizon:  timeHorizon,
 		TargetReturn: targetReturn,
+		Source:       "template",
 	}
 	return append(hypotheses, h)
 }
@@ -260,7 +262,16 @@ func (g *AIGenerator) paramsToJSON(params map[string]any) string {
 }
 
 // GenerateWithAI 调用 LLM 生成假设
-func (g *AIGenerator) GenerateWithAI(scene string, stockScope string, ctx MarketContext, aiConfigId int) ([]Hypothesis, error) {
+func (g *AIGenerator) GenerateWithAI(scene string, stockScope string, ctx MarketContext, aiConfigId int) (hypotheses []Hypothesis, err error) {
+	if g == nil {
+		return nil, fmt.Errorf("AI 生成器未初始化")
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			logger.SugaredLogger.Errorf("prediction GenerateWithAI panic: %v", r)
+			hypotheses, err = g.Generate(scene, stockScope, ctx)
+		}
+	}()
 	return g.callLLM(scene, stockScope, ctx, aiConfigId)
 }
 
@@ -273,23 +284,50 @@ func (g *AIGenerator) callLLM(scene string, stockScope string, ctx MarketContext
 
 	prompt := g.buildLLMPrompt(scene, stockScope, ctx)
 
-	openAi := data.NewDeepSeekOpenAi(context.Background(), aiConfigId)
-	ch := openAi.NewChatStream("预测工厂", "ai-prediction", prompt, nil, nil, false)
+	llmCtx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	openAi := data.NewDeepSeekOpenAi(llmCtx, aiConfigId)
+	if strings.TrimSpace(openAi.BaseUrl) == "" || strings.TrimSpace(openAi.ApiKey) == "" || strings.TrimSpace(openAi.Model) == "" {
+		logger.SugaredLogger.Warn("AI 配置不完整，fallback 到模板生成")
+		return g.Generate(scene, stockScope, ctx)
+	}
+
+	ch := make(chan map[string]any, 512)
+	go func() {
+		defer close(ch)
+		defer func() {
+			if r := recover(); r != nil {
+				logger.SugaredLogger.Errorf("prediction AskAi panic: %v", r)
+				ch <- map[string]any{"code": 0, "content": fmt.Sprintf("AI 调用异常: %v", r)}
+			}
+		}()
+		messages := []map[string]interface{}{
+			{
+				"role":    "user",
+				"content": prompt,
+			},
+		}
+		data.AskAi(openAi, nil, messages, ch, prompt, false)
+	}()
 
 	var content strings.Builder
-	timeout := time.After(60 * time.Second)
+	var streamErr string
+	timeout := time.After(90 * time.Second)
 done:
 	for {
 		select {
-		case msg := <-ch:
-			if msg == nil {
+		case msg, ok := <-ch:
+			if !ok || msg == nil {
 				break done
+			}
+			if code, ok := msg["code"].(int); ok && code == 0 {
+				if c, ok := msg["content"].(string); ok && c != "" {
+					streamErr = c
+				}
+				continue
 			}
 			if c, ok := msg["content"].(string); ok {
 				content.WriteString(c)
-			}
-			if doneFlag, ok := msg["done"].(bool); ok && doneFlag {
-				break done
 			}
 		case <-timeout:
 			logger.SugaredLogger.Warn("LLM 生成假设超时，fallback 到模板")
@@ -299,6 +337,9 @@ done:
 
 	result := content.String()
 	if result == "" {
+		if streamErr != "" {
+			logger.SugaredLogger.Warnf("LLM 返回错误：%s，fallback 到模板", streamErr)
+		}
 		logger.SugaredLogger.Warn("LLM 返回为空，fallback 到模板")
 		return g.Generate(scene, stockScope, ctx)
 	}
@@ -434,6 +475,7 @@ func (g *AIGenerator) parseLLMResponse(result, scene string) ([]Hypothesis, erro
 			Params:       g.paramsToJSON(map[string]any{"timeHorizon": timeHorizon, "targetReturn": targetReturn}),
 			TimeHorizon:  timeHorizon,
 			TargetReturn: targetReturn,
+			Source:       "ai",
 		})
 	}
 

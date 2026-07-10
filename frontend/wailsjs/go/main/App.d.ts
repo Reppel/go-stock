@@ -5,6 +5,7 @@ import {data} from '../models';
 import {context} from '../models';
 import {main} from '../models';
 import {lo} from '../models';
+import {backtest} from '../models';
 
 export function AbortChatWithAgent():Promise<void>;
 
@@ -178,6 +179,12 @@ export function GetDailyDimensionStats(arg1:string,arg2:string,arg3:number):Prom
 
 export function GetEffectiveSponsorVip():Promise<Record<string, any>>;
 
+export function GetFeatureCoverage(arg1:string,arg2:string,arg3:string):Promise<Record<string, any>>;
+
+export function GetFeatureFreshness(arg1:string):Promise<Record<string, any>>;
+
+export function GetFeatureSyncJob(arg1:number):Promise<Record<string, any>>;
+
 export function GetFollowList(arg1:number):Promise<any>;
 
 export function GetFollowedFund():Promise<Array<data.FollowedFund>>;
@@ -196,7 +203,11 @@ export function GetGroupList():Promise<Array<data.Group>>;
 
 export function GetGroupStockList(arg1:number):Promise<Array<data.GroupStock>>;
 
+export function GetHoldingSellHints():Promise<Array<models.TradeDecisionLog>>;
+
 export function GetHotStrategy():Promise<Record<string, any>>;
+
+export function GetIndicatorRegistry():Promise<Array<backtest.IndicatorDefinition>>;
 
 export function GetIndustryMoneyRankSina(arg1:string,arg2:string):Promise<Array<Record<string, any>>>;
 
@@ -218,11 +229,27 @@ export function GetMoneyRankSina(arg1:string):Promise<Array<Record<string, any>>
 
 export function GetMyPredictionHypotheses():Promise<Array<models.PredictionHypothesis>>;
 
+export function GetPredictionAlertLogs(arg1:number,arg2:string):Promise<Array<models.PredictionAlertLog>>;
+
+export function GetPredictionBacktestTrades(arg1:number):Promise<Array<models.PredictionTrade>>;
+
+export function GetPredictionCronStatus():Promise<Array<models.SystemCronTaskStatus>>;
+
+export function GetPredictionDecisionAlerts(arg1:number):Promise<Array<backtest.PredictionAlert>>;
+
+export function GetPredictionDecisions(arg1:number):Promise<Array<models.PredictionDecision>>;
+
+export function GetPredictionFactoryDashboard():Promise<Record<string, any>>;
+
+export function GetPredictionGenerationAudit(arg1:number):Promise<Array<models.PredictionGenerationAudit>>;
+
 export function GetPredictionHypothesisDailyNAV(arg1:number):Promise<Array<models.PredictionHypothesisDaily>>;
 
 export function GetPredictionHypothesisStats(arg1:number):Promise<Record<string, any>>;
 
 export function GetPredictionSession(arg1:number):Promise<Record<string, any>>;
+
+export function GetPredictionSessions(arg1:number):Promise<Array<models.PredictionSession>>;
 
 export function GetPredictionSignals(arg1:number):Promise<Array<models.PredictionSignal>>;
 
@@ -231,6 +258,8 @@ export function GetPromptTemplateList(arg1:models.PromptTemplateQuery):Promise<m
 export function GetPromptTemplates(arg1:string,arg2:string):Promise<any>;
 
 export function GetRecentDaysMarketStatistic(arg1:number):Promise<Array<models.MarketStatistic>>;
+
+export function GetRiskProfile(arg1:string):Promise<Record<string, any>>;
 
 export function GetSkillByID(arg1:number):Promise<models.Skill>;
 
@@ -262,6 +291,8 @@ export function GetStockMoneyTrendByDay(arg1:string,arg2:number):Promise<Array<R
 
 export function GetStockRealTimePrice(arg1:string):Promise<Record<string, any>>;
 
+export function GetStockTradeDecision(arg1:string):Promise<Record<string, any>>;
+
 export function GetTdxCallAuction(arg1:string,arg2:number,arg3:number):Promise<any>;
 
 export function GetTdxCompanyCategoryContent(arg1:string,arg2:string):Promise<data.TdxCompanyInfoSection>;
@@ -282,11 +313,21 @@ export function GetTimezone():Promise<Record<string, any>>;
 
 export function GetTodayMarketStatistic():Promise<Array<models.MarketStatistic>>;
 
+export function GetTodayPredictionSignals():Promise<Array<models.PredictionSignal>>;
+
+export function GetTradeDecisionTrace(arg1:string):Promise<Record<string, any>>;
+
+export function GetTradingCalendar(arg1:string,arg2:string):Promise<Array<Record<string, any>>>;
+
+export function GetTradingPositionSummaries(arg1:string):Promise<Array<data.TradingPositionSummary>>;
+
 export function GetTradingRecordById(arg1:number):Promise<data.TradingRecord>;
 
 export function GetTradingRecordList(arg1:data.TradingRecordListQuery):Promise<data.TradingRecordPageData>;
 
 export function GetTradingRecordStatistics():Promise<data.TradingRecordStatistics>;
+
+export function GetTradingRecordsByStock(arg1:string):Promise<Array<data.TradingRecordItem>>;
 
 export function GetTypeStatsByDate(arg1:string):Promise<Array<data.TypeCountStats>>;
 
@@ -330,6 +371,8 @@ export function IsUSTradingTime():Promise<boolean>;
 
 export function LongTigerRank(arg1:string):Promise<any>;
 
+export function MarkPredictionAlertStatus(arg1:number,arg2:string):Promise<string>;
+
 export function NewChatStream(arg1:string,arg2:string,arg3:string,arg4:number,arg5:any,arg6:boolean,arg7:boolean):Promise<void>;
 
 export function NewsPush(arg1:any):Promise<void>;
@@ -342,11 +385,17 @@ export function QuitApp():Promise<void>;
 
 export function ReFleshTelegraphList(arg1:string):Promise<any>;
 
+export function RebuildPredictionFeatureView(arg1:Record<string, any>):Promise<Record<string, any>>;
+
+export function RefreshMarketFactors(arg1:string):Promise<string>;
+
 export function RemoveGroup(arg1:number):Promise<string>;
 
 export function RemoveStockGroup(arg1:string,arg2:string,arg3:number):Promise<string>;
 
 export function RestartAsAdmin():Promise<void>;
+
+export function RunPredictionCronTaskNow(arg1:string):Promise<Record<string, any>>;
 
 export function SaveAIResponseResult(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string,arg6:number):Promise<void>;
 
@@ -360,9 +409,13 @@ export function SaveImage(arg1:string,arg2:string):Promise<string>;
 
 export function SavePredictionHypothesis(arg1:number):Promise<string>;
 
+export function SavePredictionObservation(arg1:number):Promise<string>;
+
 export function SaveStockChangesToHistory(arg1:Array<number>):Promise<string>;
 
 export function SaveWordFile(arg1:string,arg2:string):Promise<string>;
+
+export function ScanPredictionAlertsNow(arg1:boolean):Promise<Record<string, any>>;
 
 export function SearchCronTasks(arg1:string):Promise<Array<models.CronTask>>;
 
@@ -382,6 +435,8 @@ export function SetAlarmChangePercent(arg1:number,arg2:number,arg3:string):Promi
 
 export function SetCostPriceAndVolume(arg1:string,arg2:number,arg3:number):Promise<string>;
 
+export function SetPredictionCronTaskEnabled(arg1:string,arg2:boolean):Promise<string>;
+
 export function SetStockAICron(arg1:string,arg2:string):Promise<void>;
 
 export function SetStockSort(arg1:number,arg2:string):Promise<void>;
@@ -393,6 +448,8 @@ export function ShareAnalysis(arg1:string,arg2:string):Promise<string>;
 export function ShareText(arg1:string,arg2:string):Promise<string>;
 
 export function ShowFromTray():Promise<void>;
+
+export function StartFeatureSync(arg1:string,arg2:number):Promise<Record<string, any>>;
 
 export function StockNotice(arg1:string):Promise<Array<any>>;
 
@@ -427,3 +484,5 @@ export function UpdateSkill(arg1:models.Skill):Promise<string>;
 export function UpdateTradingRecord(arg1:data.TradingRecord):Promise<void>;
 
 export function ValidateCronExpr(arg1:string):Promise<string>;
+
+export function ValidatePredictionRule(arg1:string):Promise<Record<string, any>>;

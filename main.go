@@ -307,6 +307,15 @@ func AutoMigrate() {
 	db.Dao.AutoMigrate(&models.PredictionSignal{})
 	db.Dao.AutoMigrate(&models.PredictionHypothesisDaily{})
 	db.Dao.AutoMigrate(&models.StockFeature{})
+	db.Dao.AutoMigrate(&models.FeatureSyncJob{})
+	db.Dao.AutoMigrate(&models.PredictionTrade{})
+	db.Dao.AutoMigrate(&models.TradeDecisionLog{})
+	db.Dao.AutoMigrate(&models.PredictionGenerationAudit{})
+	db.Dao.AutoMigrate(&models.MarketFactorDaily{})
+	db.Dao.AutoMigrate(&models.StockMoneyFlowDaily{})
+	db.Dao.AutoMigrate(&models.SectorFlowDaily{})
+	db.Dao.AutoMigrate(&models.StockEventDaily{})
+	db.Dao.AutoMigrate(&models.StockRiskEvent{})
 
 	//updateMultipleModel()
 

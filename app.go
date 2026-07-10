@@ -18,6 +18,7 @@ import (
 	"go-stock/backend/models"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -3034,7 +3035,7 @@ func (a *App) initPredictionCronTasks(cronApi *agent.CronTaskApi) {
 			Enable:      true,
 			Status:      "active",
 			Description: "每天凌晨 3 点同步 AI 预测工厂股票特征数据",
-			Params:      `{"stockScope":"全部A股","days":365}`,
+			Params:      `{"stockScope":"自选股","days":365}`,
 		},
 		{
 			Name:        "预测工厂-扫描信号",
@@ -3043,6 +3044,24 @@ func (a *App) initPredictionCronTasks(cronApi *agent.CronTaskApi) {
 			Enable:      true,
 			Status:      "active",
 			Description: "工作日 15:30 扫描 AI 预测工厂预测信号",
+		},
+		{
+			Name:        "预测工厂-同步资金流",
+			CronExpr:    "0 5 15 * * 1-5",
+			TaskType:    "prediction_sync_money_flow",
+			Enable:      true,
+			Status:      "active",
+			Description: "工作日 15:05 同步个股、行业、概念资金流因子",
+			Params:      `{"stockScope":"自选股","days":120}`,
+		},
+		{
+			Name:        "预测工厂-盘中提醒",
+			CronExpr:    "0 */1 9-15 * * 1-5",
+			TaskType:    "prediction_scan_alerts",
+			Enable:      true,
+			Status:      "active",
+			Description: "工作日盘中扫描持仓触发价、止损/止盈/减仓和资金流风险提醒",
+			Params:      `{"sendNotification":true}`,
 		},
 		{
 			Name:        "预测工厂-验证信号",
@@ -3055,14 +3074,12 @@ func (a *App) initPredictionCronTasks(cronApi *agent.CronTaskApi) {
 	}
 
 	for _, task := range predictionTasks {
-		if !cronApi.ExistsByTaskType(task.TaskType) {
-			t := task
-			err := cronApi.Create(&t)
-			if err != nil {
-				logger.SugaredLogger.Errorf("自动创建 %s 任务失败：%v", t.Name, err)
-			} else {
-				logger.SugaredLogger.Infof("已自动创建 %s 定时任务", t.Name)
-			}
+		t := task
+		err := cronApi.EnsureSystemTask(&t)
+		if err != nil {
+			logger.SugaredLogger.Errorf("自动创建 %s 任务失败：%v", t.Name, err)
+		} else {
+			logger.SugaredLogger.Infof("已确保 %s 系统定时任务", t.Name)
 		}
 	}
 }
@@ -3133,13 +3150,18 @@ func (a *App) UpdateCronTask(task *models.CronTask) string {
 //	@param id 任务 ID
 //	@return string 操作结果
 func (a *App) DeleteCronTask(id uint) string {
-	err := agent.NewCronTaskApi().Delete(id)
 	task, err := agent.NewCronTaskApi().GetByID(id)
-	if err == nil {
-		if entryID, exists := a.getCronEntry(convertor.ToString(id) + "_" + task.Name); exists {
-			a.cron.Remove(entryID)
-		}
+	if err != nil {
+		return fmt.Sprintf("删除失败：%v", err)
 	}
+	if task.IsSystem && !task.AllowDelete {
+		return "系统内置任务不允许删除，请使用禁用"
+	}
+	if entryID, exists := a.getCronEntry(convertor.ToString(id) + "_" + task.Name); exists {
+		a.cron.Remove(entryID)
+		a.removeCronEntry(convertor.ToString(id) + "_" + task.Name)
+	}
+	err = agent.NewCronTaskApi().Delete(id)
 	if err != nil {
 		return fmt.Sprintf("删除失败：%v", err)
 	}
@@ -3234,6 +3256,71 @@ func (a *App) GetCronTaskTypes() []lo.Tuple2[string, string] {
 	return agent.NewCronTaskApi().GetTaskTypes()
 }
 
+func (a *App) GetPredictionCronStatus() []models.SystemCronTaskStatus {
+	taskTypes := []string{"prediction_sync_features", "prediction_sync_money_flow", "prediction_scan_signals", "prediction_scan_alerts", "prediction_validate_signals"}
+	result := make([]models.SystemCronTaskStatus, 0, len(taskTypes))
+	api := agent.NewCronTaskApi()
+	a.initPredictionCronTasks(api)
+	for _, taskType := range taskTypes {
+		task, err := api.GetByTaskType(taskType)
+		if err != nil || task == nil {
+			result = append(result, models.SystemCronTaskStatus{
+				TaskType: taskType,
+				Status:   "missing",
+			})
+			continue
+		}
+		nextRun := task.NextRunAt
+		if nextRun == nil && task.CronExpr != "" {
+			calculated := api.CalculateNextRunTime(task.CronExpr)
+			nextRun = &calculated
+		}
+		result = append(result, models.SystemCronTaskStatus{
+			ID:            task.ID,
+			Name:          task.Name,
+			TaskType:      task.TaskType,
+			CronExpr:      task.CronExpr,
+			Enable:        task.Enable,
+			Status:        task.Status,
+			LastRunAt:     task.LastRunAt,
+			NextRunAt:     nextRun,
+			RunCount:      task.RunCount,
+			LastRunResult: task.LastRunResult,
+			Description:   task.Description,
+		})
+	}
+	return result
+}
+
+func (a *App) RunPredictionCronTaskNow(taskType string) map[string]any {
+	api := agent.NewCronTaskApi()
+	a.initPredictionCronTasks(api)
+	task, err := api.GetByTaskType(taskType)
+	if err != nil {
+		return map[string]any{"code": 0, "msg": fmt.Sprintf("任务不存在：%v", err)}
+	}
+	if task.Module != "prediction_factory" || !task.IsSystem {
+		return map[string]any{"code": 0, "msg": "不是预测工厂系统任务"}
+	}
+	if err := api.ExecuteTask(a.ctx, task); err != nil {
+		return map[string]any{"code": 0, "msg": err.Error()}
+	}
+	return map[string]any{"code": 1, "msg": "执行成功"}
+}
+
+func (a *App) SetPredictionCronTaskEnabled(taskType string, enabled bool) string {
+	api := agent.NewCronTaskApi()
+	a.initPredictionCronTasks(api)
+	task, err := api.GetByTaskType(taskType)
+	if err != nil {
+		return fmt.Sprintf("任务不存在：%v", err)
+	}
+	if task.Module != "prediction_factory" || !task.IsSystem {
+		return "不是预测工厂系统任务"
+	}
+	return a.EnableCronTask(task.ID, enabled)
+}
+
 // ValidateCronExpr
 //
 //	@Description: 验证 Cron 表达式
@@ -3326,6 +3413,18 @@ func (a *App) GetTradingRecordStatistics() *data.TradingRecordStatistics {
 		return &data.TradingRecordStatistics{}
 	}
 	return stats
+}
+
+func (a *App) GetTradingPositionSummaries(stockScope string) []data.TradingPositionSummary {
+	var stockCodes []string
+	if strings.TrimSpace(stockScope) != "" {
+		stockCodes = backtest.NewStockPoolService().GetStockPool(stockScope)
+	}
+	return data.NewStockDataApi().GetTradingPositionSummaries(stockCodes)
+}
+
+func (a *App) GetTradingRecordsByStock(stockCode string) []data.TradingRecordItem {
+	return data.NewStockDataApi().GetTradingRecordsByStock(stockCode)
 }
 
 // UpdateTradingRecord 更新交易记录
@@ -3511,15 +3610,22 @@ func (a *App) GetAllMCPTools() []models.MCPServerTool {
 }
 
 // CreatePredictionSession 创建 AI 预测会话
-func (a *App) CreatePredictionSession(scene, stockScope, startDate, endDate string, aiConfigId int) map[string]any {
+func (a *App) CreatePredictionSession(scene, stockScope, startDate, endDate string, aiConfigId int) (result map[string]any) {
+	defer func() {
+		if r := recover(); r != nil {
+			logger.SugaredLogger.Errorf("CreatePredictionSession panic: %v\n%s", r, debug.Stack())
+			result = map[string]any{"code": 0, "msg": fmt.Sprintf("生成 AI 预测异常：%v", r)}
+		}
+	}()
 	svc := backtest.NewPredictionService()
 	session, hypotheses, err := svc.CreateSession(scene, stockScope, startDate, endDate, aiConfigId)
 	if err != nil {
 		return map[string]any{"code": 0, "msg": err.Error()}
 	}
+	decisions := svc.GetSessionDecisions(session.ID)
 	return map[string]any{
 		"code":      1,
-		"data":      map[string]any{"session": session, "hypotheses": hypotheses},
+		"data":      map[string]any{"session": session, "hypotheses": hypotheses, "decisions": decisions},
 		"sessionId": session.ID,
 	}
 }
@@ -3531,9 +3637,10 @@ func (a *App) GetPredictionSession(sessionID uint) map[string]any {
 	if err != nil {
 		return map[string]any{"code": 0, "msg": err.Error()}
 	}
+	decisions := svc.GetSessionDecisions(sessionID)
 	return map[string]any{
 		"code": 1,
-		"data": map[string]any{"session": session, "hypotheses": hypotheses},
+		"data": map[string]any{"session": session, "hypotheses": hypotheses, "decisions": decisions},
 	}
 }
 
@@ -3543,13 +3650,57 @@ func (a *App) GetMyPredictionHypotheses() []models.PredictionHypothesis {
 	return svc.GetMyHypotheses()
 }
 
-// SavePredictionHypothesis 保存假设为监控
+func (a *App) GetPredictionSessions(limit int) []models.PredictionSession {
+	svc := backtest.NewPredictionService()
+	return svc.GetRecentSessions(limit)
+}
+
+func (a *App) GetPredictionDecisions(sessionID uint) []models.PredictionDecision {
+	svc := backtest.NewPredictionService()
+	return svc.GetSessionDecisions(sessionID)
+}
+
+func (a *App) GetPredictionDecisionAlerts(sessionID uint) []backtest.PredictionAlert {
+	svc := backtest.NewPredictionService()
+	decisions := svc.GetSessionDecisions(sessionID)
+	return backtest.NewAlertEngine().EvaluateDecisions(decisions)
+}
+
+func (a *App) ScanPredictionAlertsNow(sendNotification bool) map[string]any {
+	result, err := backtest.NewPredictionAlertService().ScanRealtimeAlerts(sendNotification)
+	if err != nil {
+		return map[string]any{"code": 0, "msg": err.Error()}
+	}
+	return map[string]any{"code": 1, "msg": "扫描完成", "data": result}
+}
+
+func (a *App) GetPredictionAlertLogs(limit int, status string) []models.PredictionAlertLog {
+	return backtest.NewPredictionAlertService().GetAlertLogs(limit, status)
+}
+
+func (a *App) MarkPredictionAlertStatus(id uint, status string) string {
+	if err := backtest.NewPredictionAlertService().MarkAlertStatus(id, status); err != nil {
+		return "更新提醒状态失败: " + err.Error()
+	}
+	return "更新提醒状态成功"
+}
+
+// SavePredictionObservation 保存假设为观察
+func (a *App) SavePredictionObservation(hypothesisID uint) string {
+	svc := backtest.NewPredictionService()
+	if err := svc.SaveObservation(hypothesisID); err != nil {
+		return "保存观察失败: " + err.Error()
+	}
+	return "保存观察成功"
+}
+
+// SavePredictionHypothesis 启用假设为正式监控
 func (a *App) SavePredictionHypothesis(hypothesisID uint) string {
 	svc := backtest.NewPredictionService()
 	if err := svc.SaveHypothesis(hypothesisID); err != nil {
-		return "保存失败: " + err.Error()
+		return "启用正式监控失败: " + err.Error()
 	}
-	return "保存成功"
+	return "启用正式监控成功"
 }
 
 // DisablePredictionHypothesis 禁用假设
@@ -3577,6 +3728,26 @@ func (a *App) GetPredictionHypothesisDailyNAV(hypothesisID uint) []models.Predic
 	return svc.GetHypothesisDailyNAV(hypothesisID)
 }
 
+func (a *App) GetPredictionBacktestTrades(hypothesisID uint) []models.PredictionTrade {
+	return backtest.NewPredictionService().GetBacktestTrades(hypothesisID)
+}
+
+func (a *App) GetPredictionGenerationAudit(sessionID uint) []models.PredictionGenerationAudit {
+	return backtest.NewPredictionService().GetGenerationAudit(sessionID)
+}
+
+func (a *App) GetIndicatorRegistry() []backtest.IndicatorDefinition {
+	return backtest.GetIndicatorRegistry()
+}
+
+func (a *App) ValidatePredictionRule(ruleJSON string) map[string]any {
+	rule, validationErrors := backtest.ValidatePredictionRule(ruleJSON)
+	if len(validationErrors) > 0 {
+		return map[string]any{"code": 0, "errors": validationErrors}
+	}
+	return map[string]any{"code": 1, "data": rule}
+}
+
 // GetPredictionSignals 获取预测信号列表
 func (a *App) GetPredictionSignals(hypothesisID uint) []models.PredictionSignal {
 	var signals []models.PredictionSignal
@@ -3584,17 +3755,143 @@ func (a *App) GetPredictionSignals(hypothesisID uint) []models.PredictionSignal 
 	return signals
 }
 
+func (a *App) GetTodayPredictionSignals() []models.PredictionSignal {
+	var signals []models.PredictionSignal
+	today := time.Now().Format("2006-01-02")
+	db.Dao.Where("signal_date = ?", today).Order("id desc").Find(&signals)
+	return signals
+}
+
+func (a *App) GetHoldingSellHints() []models.TradeDecisionLog {
+	var logs []models.TradeDecisionLog
+	db.Dao.Where("action IN ?", []string{"hold", "reduce", "take_profit", "stop_loss"}).
+		Order("created_at desc").
+		Limit(100).
+		Find(&logs)
+	return logs
+}
+
+func (a *App) GetStockTradeDecision(stockCode string) map[string]any {
+	var log models.TradeDecisionLog
+	if err := db.Dao.Where("stock_code = ?", stockCode).Order("created_at desc").First(&log).Error; err == nil {
+		return map[string]any{"code": 1, "data": log}
+	}
+	var feature models.StockFeature
+	if err := db.Dao.Where("stock_code = ?", stockCode).Order("date desc").First(&feature).Error; err != nil {
+		return map[string]any{"code": 0, "msg": "暂无决策数据"}
+	}
+	return map[string]any{
+		"code": 1,
+		"data": map[string]any{
+			"stockCode":    stockCode,
+			"action":       "observe",
+			"score":        0,
+			"scoreType":    "heuristic",
+			"currentPrice": feature.Close,
+			"signalDate":   feature.Date,
+			"dataAsOf":     feature.DataAsOf,
+			"risks":        []string{"暂无 active 策略触发，仅展示最新特征"},
+		},
+	}
+}
+
+func (a *App) GetTradeDecisionTrace(decisionID string) map[string]any {
+	var log models.TradeDecisionLog
+	if err := db.Dao.Where("decision_id = ?", decisionID).First(&log).Error; err != nil {
+		return map[string]any{"code": 0, "msg": "决策记录不存在"}
+	}
+	return map[string]any{"code": 1, "data": log}
+}
+
+func (a *App) GetRiskProfile(stockCode string) map[string]any {
+	today := time.Now().Format("2006-01-02")
+	var events []models.StockRiskEvent
+	db.Dao.Where("stock_code = ? AND valid_from <= ? AND valid_to >= ?", stockCode, today, today).
+		Order("data_as_of desc").
+		Find(&events)
+	level := "low"
+	if len(events) > 0 {
+		level = events[0].Level
+	}
+	return map[string]any{"code": 1, "data": map[string]any{"stockCode": stockCode, "level": level, "events": events}}
+}
+
+func (a *App) GetPredictionFactoryDashboard() map[string]any {
+	var activeCount int64
+	var draftCount int64
+	var pendingSignals int64
+	var todaySignals int64
+	today := time.Now().Format("2006-01-02")
+	db.Dao.Model(&models.PredictionHypothesis{}).Where("status = ?", "active").Count(&activeCount)
+	db.Dao.Model(&models.PredictionHypothesis{}).Where("status = ?", "draft").Count(&draftCount)
+	db.Dao.Model(&models.PredictionSignal{}).Where("status = ?", "pending").Count(&pendingSignals)
+	db.Dao.Model(&models.PredictionSignal{}).Where("signal_date = ?", today).Count(&todaySignals)
+	return map[string]any{
+		"code": 1,
+		"data": map[string]any{
+			"activeHypotheses": activeCount,
+			"draftHypotheses":  draftCount,
+			"pendingSignals":   pendingSignals,
+			"todaySignals":     todaySignals,
+		},
+	}
+}
+
+func (a *App) GetTradingCalendar(startDate string, endDate string) []map[string]any {
+	start, err1 := time.Parse("2006-01-02", startDate)
+	end, err2 := time.Parse("2006-01-02", endDate)
+	if err1 != nil || err2 != nil || start.After(end) {
+		return nil
+	}
+	var days []map[string]any
+	for d := start; !d.After(end); d = d.AddDate(0, 0, 1) {
+		trading := d.Weekday() != time.Saturday && d.Weekday() != time.Sunday
+		days = append(days, map[string]any{
+			"date":      d.Format("2006-01-02"),
+			"isTrading": trading,
+		})
+	}
+	return days
+}
+
 // SyncStockFeatures 手动同步股票特征数据
 func (a *App) SyncStockFeatures(stockScope string) string {
-	go func() {
-		poolService := backtest.NewStockPoolService()
-		stockCodes := poolService.GetStockPool(stockScope)
-		if len(stockCodes) == 0 {
-			logger.SugaredLogger.Warn("同步特征失败：股票池为空")
-			return
-		}
-		backtest.NewFeatureSyncService().SyncAllStockFeatures(stockCodes, 365)
-		logger.SugaredLogger.Infof("股票特征同步完成，共 %d 只", len(stockCodes))
-	}()
-	return "特征同步任务已启动，后台执行中..."
+	job, err := backtest.NewFeatureSyncService().StartFeatureSync(stockScope, 365)
+	if err != nil {
+		return fmt.Sprintf("特征同步任务启动失败：%v", err)
+	}
+	return fmt.Sprintf("特征同步任务已启动，后台执行中... jobID=%d", job.ID)
+}
+
+func (a *App) StartFeatureSync(stockScope string, days int) map[string]any {
+	job, err := backtest.NewFeatureSyncService().StartFeatureSync(stockScope, days)
+	if err != nil {
+		return map[string]any{"code": 0, "msg": err.Error()}
+	}
+	return map[string]any{"code": 1, "msg": "特征同步任务已启动", "data": job}
+}
+
+func (a *App) GetFeatureSyncJob(jobID uint) map[string]any {
+	job, err := backtest.NewFeatureSyncService().GetFeatureSyncJob(jobID)
+	if err != nil {
+		return map[string]any{"code": 0, "msg": err.Error()}
+	}
+	return map[string]any{"code": 1, "data": job}
+}
+
+func (a *App) GetFeatureCoverage(stockScope string, startDate string, endDate string) map[string]any {
+	coverage := backtest.NewFeatureSyncService().GetFeatureCoverageForScopeByDates(stockScope, startDate, endDate)
+	return map[string]any{"code": 1, "data": coverage}
+}
+
+func (a *App) GetFeatureFreshness(stockScope string) map[string]any {
+	return map[string]any{"code": 1, "data": backtest.NewFeatureSyncService().GetFeatureFreshness(stockScope)}
+}
+
+func (a *App) RebuildPredictionFeatureView(req map[string]any) map[string]any {
+	return map[string]any{"code": 1, "msg": "当前版本使用运行时 as-of 查询，暂不需要重建物化视图", "data": req}
+}
+
+func (a *App) RefreshMarketFactors(date string) string {
+	return "市场因子刷新接口已预留，当前版本使用已有市场情绪/资金数据表"
 }

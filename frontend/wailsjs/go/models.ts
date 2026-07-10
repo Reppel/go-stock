@@ -1,3 +1,81 @@
+export namespace backtest {
+	
+	export class IndicatorDefinition {
+	    name: string;
+	    label: string;
+	    source: string;
+	    unit: string;
+	    description: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new IndicatorDefinition(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.label = source["label"];
+	        this.source = source["source"];
+	        this.unit = source["unit"];
+	        this.description = source["description"];
+	    }
+	}
+	export class PredictionAlert {
+	    key: string;
+	    sessionId: number;
+	    decisionId: number;
+	    stockCode: string;
+	    stockName: string;
+	    level: string;
+	    title: string;
+	    message: string;
+	    reason: string;
+	    price: number;
+	    thresholdPrice: number;
+	    // Go type: time
+	    createdAt: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new PredictionAlert(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.key = source["key"];
+	        this.sessionId = source["sessionId"];
+	        this.decisionId = source["decisionId"];
+	        this.stockCode = source["stockCode"];
+	        this.stockName = source["stockName"];
+	        this.level = source["level"];
+	        this.title = source["title"];
+	        this.message = source["message"];
+	        this.reason = source["reason"];
+	        this.price = source["price"];
+	        this.thresholdPrice = source["thresholdPrice"];
+	        this.createdAt = this.convertValues(source["createdAt"], null);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
 export namespace data {
 	
 	export class AIConfig {
@@ -1414,6 +1492,74 @@ export namespace data {
 	
 	
 	
+	export class TradingPositionSummary {
+	    stockCode: string;
+	    stockName: string;
+	    currentVolume: number;
+	    avgCostPrice: number;
+	    costAmount: number;
+	    currentPrice: number;
+	    marketValue: number;
+	    floatingProfit: number;
+	    floatingProfitRate: number;
+	    realizedProfit: number;
+	    totalProfit: number;
+	    totalProfitRate: number;
+	    totalBuyAmount: number;
+	    totalSellAmount: number;
+	    buyCount: number;
+	    sellCount: number;
+	    // Go type: time
+	    firstBuyTime: any;
+	    // Go type: time
+	    lastTradeTime: any;
+	    source: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new TradingPositionSummary(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.stockCode = source["stockCode"];
+	        this.stockName = source["stockName"];
+	        this.currentVolume = source["currentVolume"];
+	        this.avgCostPrice = source["avgCostPrice"];
+	        this.costAmount = source["costAmount"];
+	        this.currentPrice = source["currentPrice"];
+	        this.marketValue = source["marketValue"];
+	        this.floatingProfit = source["floatingProfit"];
+	        this.floatingProfitRate = source["floatingProfitRate"];
+	        this.realizedProfit = source["realizedProfit"];
+	        this.totalProfit = source["totalProfit"];
+	        this.totalProfitRate = source["totalProfitRate"];
+	        this.totalBuyAmount = source["totalBuyAmount"];
+	        this.totalSellAmount = source["totalSellAmount"];
+	        this.buyCount = source["buyCount"];
+	        this.sellCount = source["sellCount"];
+	        this.firstBuyTime = this.convertValues(source["firstBuyTime"], null);
+	        this.lastTradeTime = this.convertValues(source["lastTradeTime"], null);
+	        this.source = source["source"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class TradingRecord {
 	    ID: number;
 	    StockCode: string;
@@ -2270,6 +2416,11 @@ export namespace models {
 	    status: string;
 	    description: string;
 	    lastRunResult: string;
+	    module: string;
+	    isSystem: boolean;
+	    visible: boolean;
+	    allowDelete: boolean;
+	    owner: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new CronTask(source);
@@ -2292,6 +2443,11 @@ export namespace models {
 	        this.status = source["status"];
 	        this.description = source["description"];
 	        this.lastRunResult = source["lastRunResult"];
+	        this.module = source["module"];
+	        this.isSystem = source["isSystem"];
+	        this.visible = source["visible"];
+	        this.allowDelete = source["allowDelete"];
+	        this.owner = source["owner"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -2350,6 +2506,8 @@ export namespace models {
 	    name: string;
 	    taskType: string;
 	    status: string;
+	    module: string;
+	    includeSystem: boolean;
 	    enable?: boolean;
 	
 	    static createFrom(source: any = {}) {
@@ -2363,6 +2521,8 @@ export namespace models {
 	        this.name = source["name"];
 	        this.taskType = source["taskType"];
 	        this.status = source["status"];
+	        this.module = source["module"];
+	        this.includeSystem = source["includeSystem"];
 	        this.enable = source["enable"];
 	    }
 	}
@@ -2679,6 +2839,228 @@ export namespace models {
 		    return a;
 		}
 	}
+	export class PredictionAlertLog {
+	    id: number;
+	    alertKey: string;
+	    sessionId: number;
+	    decisionId: number;
+	    stockCode: string;
+	    stockName: string;
+	    alertType: string;
+	    level: string;
+	    title: string;
+	    message: string;
+	    triggerPrice: number;
+	    thresholdPrice: number;
+	    status: string;
+	    channel: string;
+	    reason: string;
+	    // Go type: time
+	    triggeredAt: any;
+	    // Go type: time
+	    sentAt?: any;
+	    // Go type: time
+	    readAt?: any;
+	    // Go type: time
+	    createdAt: any;
+	    // Go type: time
+	    updatedAt: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new PredictionAlertLog(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.alertKey = source["alertKey"];
+	        this.sessionId = source["sessionId"];
+	        this.decisionId = source["decisionId"];
+	        this.stockCode = source["stockCode"];
+	        this.stockName = source["stockName"];
+	        this.alertType = source["alertType"];
+	        this.level = source["level"];
+	        this.title = source["title"];
+	        this.message = source["message"];
+	        this.triggerPrice = source["triggerPrice"];
+	        this.thresholdPrice = source["thresholdPrice"];
+	        this.status = source["status"];
+	        this.channel = source["channel"];
+	        this.reason = source["reason"];
+	        this.triggeredAt = this.convertValues(source["triggeredAt"], null);
+	        this.sentAt = this.convertValues(source["sentAt"], null);
+	        this.readAt = this.convertValues(source["readAt"], null);
+	        this.createdAt = this.convertValues(source["createdAt"], null);
+	        this.updatedAt = this.convertValues(source["updatedAt"], null);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class PredictionDecision {
+	    id: number;
+	    sessionId: number;
+	    stockCode: string;
+	    stockName: string;
+	    decisionDate: string;
+	    action: string;
+	    actionText: string;
+	    positionAdvice: string;
+	    quantityPercent: number;
+	    suggestedQuantity: number;
+	    suggestedAmount: number;
+	    confidence: string;
+	    qualityRating: string;
+	    riskLevel: string;
+	    score: number;
+	    currentPrice: number;
+	    referencePrice: number;
+	    costPrice: number;
+	    holdingVolume: number;
+	    profitRate: number;
+	    buyPriceMin: number;
+	    buyPriceMax: number;
+	    sellPriceMin: number;
+	    sellPriceMax: number;
+	    defensePrice: number;
+	    stopLossPrice: number;
+	    takeProfitPrice: number;
+	    matchedStrategiesJson: string;
+	    sizingJson: string;
+	    capitalFlowJson: string;
+	    alertJson: string;
+	    reasonsJson: string;
+	    risksJson: string;
+	    sampleWarning: boolean;
+	    featureVersion: string;
+	    // Go type: time
+	    dataAsOf: any;
+	    status: string;
+	    // Go type: time
+	    createdAt: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new PredictionDecision(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.sessionId = source["sessionId"];
+	        this.stockCode = source["stockCode"];
+	        this.stockName = source["stockName"];
+	        this.decisionDate = source["decisionDate"];
+	        this.action = source["action"];
+	        this.actionText = source["actionText"];
+	        this.positionAdvice = source["positionAdvice"];
+	        this.quantityPercent = source["quantityPercent"];
+	        this.suggestedQuantity = source["suggestedQuantity"];
+	        this.suggestedAmount = source["suggestedAmount"];
+	        this.confidence = source["confidence"];
+	        this.qualityRating = source["qualityRating"];
+	        this.riskLevel = source["riskLevel"];
+	        this.score = source["score"];
+	        this.currentPrice = source["currentPrice"];
+	        this.referencePrice = source["referencePrice"];
+	        this.costPrice = source["costPrice"];
+	        this.holdingVolume = source["holdingVolume"];
+	        this.profitRate = source["profitRate"];
+	        this.buyPriceMin = source["buyPriceMin"];
+	        this.buyPriceMax = source["buyPriceMax"];
+	        this.sellPriceMin = source["sellPriceMin"];
+	        this.sellPriceMax = source["sellPriceMax"];
+	        this.defensePrice = source["defensePrice"];
+	        this.stopLossPrice = source["stopLossPrice"];
+	        this.takeProfitPrice = source["takeProfitPrice"];
+	        this.matchedStrategiesJson = source["matchedStrategiesJson"];
+	        this.sizingJson = source["sizingJson"];
+	        this.capitalFlowJson = source["capitalFlowJson"];
+	        this.alertJson = source["alertJson"];
+	        this.reasonsJson = source["reasonsJson"];
+	        this.risksJson = source["risksJson"];
+	        this.sampleWarning = source["sampleWarning"];
+	        this.featureVersion = source["featureVersion"];
+	        this.dataAsOf = this.convertValues(source["dataAsOf"], null);
+	        this.status = source["status"];
+	        this.createdAt = this.convertValues(source["createdAt"], null);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class PredictionGenerationAudit {
+	    id: number;
+	    sessionId: number;
+	    source: string;
+	    rawOutput: string;
+	    errorJson: string;
+	    schemaVersion: string;
+	    // Go type: time
+	    createdAt: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new PredictionGenerationAudit(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.sessionId = source["sessionId"];
+	        this.source = source["source"];
+	        this.rawOutput = source["rawOutput"];
+	        this.errorJson = source["errorJson"];
+	        this.schemaVersion = source["schemaVersion"];
+	        this.createdAt = this.convertValues(source["createdAt"], null);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class PredictionHypothesis {
 	    id: number;
 	    sessionId: number;
@@ -2693,6 +3075,18 @@ export namespace models {
 	    avgReturn: number;
 	    maxDrawdown: number;
 	    tradeCount: number;
+	    totalReturn: number;
+	    medianReturn: number;
+	    profitLossRatio: number;
+	    outSampleAvgReturn: number;
+	    outSampleMaxDrawdown: number;
+	    dataCoverage: number;
+	    noLookaheadPassed: boolean;
+	    backtestConfigJson: string;
+	    generationSource: string;
+	    schemaVersion: string;
+	    strategyVersion: string;
+	    featureVersion: string;
 	    validReturn: number;
 	    validCount: number;
 	    status: string;
@@ -2718,6 +3112,18 @@ export namespace models {
 	        this.avgReturn = source["avgReturn"];
 	        this.maxDrawdown = source["maxDrawdown"];
 	        this.tradeCount = source["tradeCount"];
+	        this.totalReturn = source["totalReturn"];
+	        this.medianReturn = source["medianReturn"];
+	        this.profitLossRatio = source["profitLossRatio"];
+	        this.outSampleAvgReturn = source["outSampleAvgReturn"];
+	        this.outSampleMaxDrawdown = source["outSampleMaxDrawdown"];
+	        this.dataCoverage = source["dataCoverage"];
+	        this.noLookaheadPassed = source["noLookaheadPassed"];
+	        this.backtestConfigJson = source["backtestConfigJson"];
+	        this.generationSource = source["generationSource"];
+	        this.schemaVersion = source["schemaVersion"];
+	        this.strategyVersion = source["strategyVersion"];
+	        this.featureVersion = source["featureVersion"];
 	        this.validReturn = source["validReturn"];
 	        this.validCount = source["validCount"];
 	        this.status = source["status"];
@@ -2764,6 +3170,51 @@ export namespace models {
 	        this.tradeCount = source["tradeCount"];
 	    }
 	}
+	export class PredictionSession {
+	    id: number;
+	    scene: string;
+	    stockScope: string;
+	    startDate: string;
+	    endDate: string;
+	    status: string;
+	    errorMsg: string;
+	    // Go type: time
+	    createdAt: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new PredictionSession(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.scene = source["scene"];
+	        this.stockScope = source["stockScope"];
+	        this.startDate = source["startDate"];
+	        this.endDate = source["endDate"];
+	        this.status = source["status"];
+	        this.errorMsg = source["errorMsg"];
+	        this.createdAt = this.convertValues(source["createdAt"], null);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class PredictionSignal {
 	    id: number;
 	    hypothesisId: number;
@@ -2780,6 +3231,11 @@ export namespace models {
 	    validatedAt: any;
 	    hit: boolean;
 	    status: string;
+	    decisionId: string;
+	    // Go type: time
+	    dataAsOf: any;
+	    reasonsJson: string;
+	    risksJson: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new PredictionSignal(source);
@@ -2801,6 +3257,80 @@ export namespace models {
 	        this.validatedAt = this.convertValues(source["validatedAt"], null);
 	        this.hit = source["hit"];
 	        this.status = source["status"];
+	        this.decisionId = source["decisionId"];
+	        this.dataAsOf = this.convertValues(source["dataAsOf"], null);
+	        this.reasonsJson = source["reasonsJson"];
+	        this.risksJson = source["risksJson"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class PredictionTrade {
+	    id: number;
+	    hypothesisId: number;
+	    stockCode: string;
+	    stockName: string;
+	    signalDate: string;
+	    buyDate: string;
+	    sellDate: string;
+	    buyPrice: number;
+	    sellPrice: number;
+	    fee: number;
+	    slippage: number;
+	    returnRate: number;
+	    maxReturn: number;
+	    maxDrawdown: number;
+	    holdDays: number;
+	    entryReasonJson: string;
+	    exitReason: string;
+	    featureVersion: string;
+	    // Go type: time
+	    dataAsOf: any;
+	    // Go type: time
+	    createdAt: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new PredictionTrade(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.hypothesisId = source["hypothesisId"];
+	        this.stockCode = source["stockCode"];
+	        this.stockName = source["stockName"];
+	        this.signalDate = source["signalDate"];
+	        this.buyDate = source["buyDate"];
+	        this.sellDate = source["sellDate"];
+	        this.buyPrice = source["buyPrice"];
+	        this.sellPrice = source["sellPrice"];
+	        this.fee = source["fee"];
+	        this.slippage = source["slippage"];
+	        this.returnRate = source["returnRate"];
+	        this.maxReturn = source["maxReturn"];
+	        this.maxDrawdown = source["maxDrawdown"];
+	        this.holdDays = source["holdDays"];
+	        this.entryReasonJson = source["entryReasonJson"];
+	        this.exitReason = source["exitReason"];
+	        this.featureVersion = source["featureVersion"];
+	        this.dataAsOf = this.convertValues(source["dataAsOf"], null);
+	        this.createdAt = this.convertValues(source["createdAt"], null);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -3248,6 +3778,58 @@ export namespace models {
 	        this.MAX_TRADE_DATE = source["MAX_TRADE_DATE"];
 	    }
 	}
+	export class SystemCronTaskStatus {
+	    id: number;
+	    name: string;
+	    taskType: string;
+	    cronExpr: string;
+	    enable: boolean;
+	    status: string;
+	    // Go type: time
+	    lastRunAt?: any;
+	    // Go type: time
+	    nextRunAt?: any;
+	    runCount: number;
+	    lastRunResult: string;
+	    description: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SystemCronTaskStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.taskType = source["taskType"];
+	        this.cronExpr = source["cronExpr"];
+	        this.enable = source["enable"];
+	        this.status = source["status"];
+	        this.lastRunAt = this.convertValues(source["lastRunAt"], null);
+	        this.nextRunAt = this.convertValues(source["nextRunAt"], null);
+	        this.runCount = source["runCount"];
+	        this.lastRunResult = source["lastRunResult"];
+	        this.description = source["description"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class TechnicalIndicators {
 	    MACD_GOLDEN_FORK: boolean;
 	    KDJ_GOLDEN_FORK: boolean;
@@ -3325,6 +3907,75 @@ export namespace models {
 	        this.UPNDAY = source["UPNDAY"];
 	        this.DOWNNDAY = source["DOWNNDAY"];
 	    }
+	}
+	export class TradeDecisionLog {
+	    id: number;
+	    decisionId: string;
+	    stockCode: string;
+	    stockName: string;
+	    action: string;
+	    score: number;
+	    scoreType: string;
+	    currentPrice: number;
+	    reasonsJson: string;
+	    risksJson: string;
+	    matchedFactsJson: string;
+	    metricsJson: string;
+	    strategyId: number;
+	    strategyVersion: string;
+	    featureVersion: string;
+	    signalDate: string;
+	    // Go type: time
+	    dataAsOf: any;
+	    // Go type: time
+	    validUntil: any;
+	    // Go type: time
+	    createdAt: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new TradeDecisionLog(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.decisionId = source["decisionId"];
+	        this.stockCode = source["stockCode"];
+	        this.stockName = source["stockName"];
+	        this.action = source["action"];
+	        this.score = source["score"];
+	        this.scoreType = source["scoreType"];
+	        this.currentPrice = source["currentPrice"];
+	        this.reasonsJson = source["reasonsJson"];
+	        this.risksJson = source["risksJson"];
+	        this.matchedFactsJson = source["matchedFactsJson"];
+	        this.metricsJson = source["metricsJson"];
+	        this.strategyId = source["strategyId"];
+	        this.strategyVersion = source["strategyVersion"];
+	        this.featureVersion = source["featureVersion"];
+	        this.signalDate = source["signalDate"];
+	        this.dataAsOf = this.convertValues(source["dataAsOf"], null);
+	        this.validUntil = this.convertValues(source["validUntil"], null);
+	        this.createdAt = this.convertValues(source["createdAt"], null);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class VersionInfo {
 	    ID: number;

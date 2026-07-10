@@ -1470,6 +1470,11 @@ type CronTask struct {
 	Status        string     `json:"status" gorm:"size:20;default:active"` // active, paused, error
 	Description   string     `json:"description" gorm:"size:500"`
 	LastRunResult string     `json:"lastRunResult" gorm:"size:500"`
+	Module        string     `json:"module" gorm:"size:50;index"` // prediction_factory / research / system / user
+	IsSystem      bool       `json:"isSystem" gorm:"default:false;index"`
+	Visible       bool       `json:"visible" gorm:"default:true;index"`
+	AllowDelete   bool       `json:"allowDelete" gorm:"default:true"`
+	Owner         string     `json:"owner" gorm:"size:50;default:user"`
 }
 
 func (CronTask) TableName() string {
@@ -1477,12 +1482,14 @@ func (CronTask) TableName() string {
 }
 
 type CronTaskQuery struct {
-	Page     int    `json:"page"`
-	PageSize int    `json:"pageSize"`
-	Name     string `json:"name"`
-	TaskType string `json:"taskType"`
-	Status   string `json:"status"`
-	Enable   *bool  `json:"enable"`
+	Page          int    `json:"page"`
+	PageSize      int    `json:"pageSize"`
+	Name          string `json:"name"`
+	TaskType      string `json:"taskType"`
+	Status        string `json:"status"`
+	Module        string `json:"module"`
+	IncludeSystem bool   `json:"includeSystem"`
+	Enable        *bool  `json:"enable"`
 }
 
 type CronTaskPageResp struct {

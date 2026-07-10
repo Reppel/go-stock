@@ -250,6 +250,28 @@ type TradingRecordStatistics struct {
 	StockCount      int64   `json:"stockCount"`
 }
 
+type TradingPositionSummary struct {
+	StockCode          string    `json:"stockCode"`
+	StockName          string    `json:"stockName"`
+	CurrentVolume      int64     `json:"currentVolume"`
+	AvgCostPrice       float64   `json:"avgCostPrice"`
+	CostAmount         float64   `json:"costAmount"`
+	CurrentPrice       float64   `json:"currentPrice"`
+	MarketValue        float64   `json:"marketValue"`
+	FloatingProfit     float64   `json:"floatingProfit"`
+	FloatingProfitRate float64   `json:"floatingProfitRate"`
+	RealizedProfit     float64   `json:"realizedProfit"`
+	TotalProfit        float64   `json:"totalProfit"`
+	TotalProfitRate    float64   `json:"totalProfitRate"`
+	TotalBuyAmount     float64   `json:"totalBuyAmount"`
+	TotalSellAmount    float64   `json:"totalSellAmount"`
+	BuyCount           int       `json:"buyCount"`
+	SellCount          int       `json:"sellCount"`
+	FirstBuyTime       time.Time `json:"firstBuyTime"`
+	LastTradeTime      time.Time `json:"lastTradeTime"`
+	Source             string    `json:"source"`
+}
+
 type TushareStockBasicResponse struct {
 	TushareResponse
 	Data StockBasicResponse `json:"data"`
@@ -2653,6 +2675,31 @@ func fifoAvgUnitCost(lots []tradingRecordFIFOLot, sellVol int64) (avg float64, o
 	return cost / float64(got), true
 }
 
+func consumeTradingRecordLots(lots []tradingRecordFIFOLot, sellVol int64) (float64, []tradingRecordFIFOLot, bool) {
+	if sellVol <= 0 {
+		return 0, lots, false
+	}
+	var cost float64
+	var got int64
+	for i := range lots {
+		if got >= sellVol {
+			break
+		}
+		if lots[i].Volume <= 0 {
+			continue
+		}
+		need := sellVol - got
+		take := need
+		if take > lots[i].Volume {
+			take = lots[i].Volume
+		}
+		cost += float64(take) * lots[i].Price
+		lots[i].Volume -= take
+		got += take
+	}
+	return cost, lots, got == sellVol
+}
+
 // normalizeTradingRecordAPI 将交易日志中的代码转为实时/K 线接口使用的代码
 func normalizeTradingRecordAPI(stockCode string) string {
 	apiCode := stockCode
@@ -2720,6 +2767,208 @@ func (receiver StockDataApi) fillTradingRecordCloseSnapshot(record *TradingRecor
 	}
 	apiCode := normalizeTradingRecordAPI(record.StockCode)
 	record.RecordedClosePrice = receiver.resolveTradingRecordClosePrice(apiCode, record.TradingTime, record.Price)
+}
+
+func (receiver StockDataApi) resolveTradingPositionPrice(stockCode string, fallback float64) float64 {
+	apiCode := normalizeTradingRecordAPI(stockCode)
+	var stock StockInfo
+	if err := db.Dao.Model(&StockInfo{}).Where("code = ?", apiCode).Order("updated_at desc").First(&stock).Error; err == nil {
+		price, _ := convertor.ToFloat(stock.Price)
+		if price <= 0 {
+			price, _ = convertor.ToFloat(stock.A1P)
+		}
+		if price > 0 {
+			return price
+		}
+	}
+
+	var feature models.StockFeature
+	if err := db.Dao.Model(&models.StockFeature{}).Where("stock_code = ?", apiCode).Order("date desc").First(&feature).Error; err == nil && feature.Close > 0 {
+		return feature.Close
+	}
+	if fallback > 0 {
+		return fallback
+	}
+	return 0
+}
+
+// GetTradingPositionSummaries 按交易流水汇总当前每股持仓。
+func (receiver StockDataApi) GetTradingPositionSummaries(stockCodes []string) []TradingPositionSummary {
+	codeFilter := make(map[string]bool)
+	for _, code := range stockCodes {
+		apiCode := normalizeTradingRecordAPI(code)
+		if apiCode != "" {
+			codeFilter[apiCode] = true
+		}
+	}
+
+	var records []TradingRecord
+	if err := db.Dao.Model(&TradingRecord{}).Order("trading_time ASC, id ASC").Find(&records).Error; err != nil {
+		logger.SugaredLogger.Errorf("获取交易持仓汇总失败: %s", err.Error())
+		return nil
+	}
+
+	type positionState struct {
+		code            string
+		name            string
+		lots            []tradingRecordFIFOLot
+		realizedProfit  float64
+		totalBuyAmount  float64
+		totalSellAmount float64
+		buyCount        int
+		sellCount       int
+		firstBuyTime    time.Time
+		lastTradeTime   time.Time
+		lastPrice       float64
+	}
+
+	states := make(map[string]*positionState)
+	for _, record := range records {
+		code := normalizeTradingRecordAPI(record.StockCode)
+		if code == "" {
+			continue
+		}
+		if len(codeFilter) > 0 && !codeFilter[code] {
+			continue
+		}
+		state := states[code]
+		if state == nil {
+			state = &positionState{code: code}
+			states[code] = state
+		}
+		if strings.TrimSpace(record.StockName) != "" {
+			state.name = record.StockName
+		}
+		state.lastTradeTime = record.TradingTime
+		if record.Price > 0 {
+			state.lastPrice = record.Price
+		}
+
+		amount := record.Price * float64(record.Volume)
+		switch strings.TrimSpace(record.Direction) {
+		case "买入":
+			state.buyCount++
+			state.totalBuyAmount += amount + record.Fee
+			state.lots = append(state.lots, tradingRecordFIFOLot{Volume: record.Volume, Price: record.Price})
+			if state.firstBuyTime.IsZero() {
+				state.firstBuyTime = record.TradingTime
+			}
+		case "卖出":
+			state.sellCount++
+			state.totalSellAmount += amount - record.Fee
+			cost, lots, ok := consumeTradingRecordLots(state.lots, record.Volume)
+			state.lots = lots
+			if ok {
+				state.realizedProfit += amount - record.Fee - cost
+			}
+		}
+	}
+
+	var fallbackStocks []FollowedStock
+	db.Dao.Model(&FollowedStock{}).Find(&fallbackStocks)
+	for _, stock := range fallbackStocks {
+		code := normalizeTradingRecordAPI(stock.StockCode)
+		if code == "" {
+			continue
+		}
+		if len(codeFilter) > 0 && !codeFilter[code] {
+			continue
+		}
+		state := states[code]
+		if state == nil {
+			state = &positionState{code: code}
+			states[code] = state
+		}
+		if state.name == "" {
+			state.name = stock.Name
+		}
+		if len(state.lots) == 0 && stock.CostPrice > 0 && stock.Volume > 0 {
+			state.lots = append(state.lots, tradingRecordFIFOLot{Volume: stock.Volume, Price: stock.CostPrice})
+			state.totalBuyAmount = stock.CostPrice * float64(stock.Volume)
+			state.firstBuyTime = stock.Time
+			state.lastTradeTime = stock.Time
+			state.lastPrice = stock.Price
+		}
+	}
+
+	result := make([]TradingPositionSummary, 0, len(states))
+	for _, state := range states {
+		var currentVolume int64
+		var costAmount float64
+		for _, lot := range state.lots {
+			if lot.Volume <= 0 {
+				continue
+			}
+			currentVolume += lot.Volume
+			costAmount += float64(lot.Volume) * lot.Price
+		}
+		if currentVolume <= 0 && state.buyCount == 0 {
+			continue
+		}
+		avgCost := 0.0
+		if currentVolume > 0 {
+			avgCost = costAmount / float64(currentVolume)
+		}
+		currentPrice := receiver.resolveTradingPositionPrice(state.code, state.lastPrice)
+		marketValue := currentPrice * float64(currentVolume)
+		floatingProfit := marketValue - costAmount
+		floatingRate := 0.0
+		if costAmount > 0 {
+			floatingRate = floatingProfit / costAmount
+		}
+		totalProfit := state.realizedProfit + floatingProfit
+		totalRate := 0.0
+		if state.totalBuyAmount > 0 {
+			totalRate = totalProfit / state.totalBuyAmount
+		}
+		result = append(result, TradingPositionSummary{
+			StockCode:          state.code,
+			StockName:          state.name,
+			CurrentVolume:      currentVolume,
+			AvgCostPrice:       avgCost,
+			CostAmount:         costAmount,
+			CurrentPrice:       currentPrice,
+			MarketValue:        marketValue,
+			FloatingProfit:     floatingProfit,
+			FloatingProfitRate: floatingRate,
+			RealizedProfit:     state.realizedProfit,
+			TotalProfit:        totalProfit,
+			TotalProfitRate:    totalRate,
+			TotalBuyAmount:     state.totalBuyAmount,
+			TotalSellAmount:    state.totalSellAmount,
+			BuyCount:           state.buyCount,
+			SellCount:          state.sellCount,
+			FirstBuyTime:       state.firstBuyTime,
+			LastTradeTime:      state.lastTradeTime,
+			Source:             "trading_records",
+		})
+	}
+	return result
+}
+
+func (receiver StockDataApi) GetTradingRecordsByStock(stockCode string) []TradingRecordItem {
+	code := normalizeTradingRecordAPI(stockCode)
+	if code == "" {
+		return nil
+	}
+
+	var records []TradingRecord
+	if err := db.Dao.Model(&TradingRecord{}).Order("trading_time DESC, id DESC").Find(&records).Error; err != nil {
+		logger.SugaredLogger.Errorf("获取单股交易流水失败: %s", err.Error())
+		return nil
+	}
+	items := make([]TradingRecordItem, 0)
+	for _, record := range records {
+		if normalizeTradingRecordAPI(record.StockCode) != code {
+			continue
+		}
+		record.Amount = record.Price * float64(record.Volume)
+		items = append(items, TradingRecordItem{TradingRecord: record})
+		if len(items) >= 100 {
+			break
+		}
+	}
+	return items
 }
 
 // GetTradingRecordList 获取交易日志列表（分页、关键词、方向、交易日期范围）

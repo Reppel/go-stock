@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"go-stock/backend/db"
 	"go-stock/backend/models"
+	"math"
+	"sort"
 	"time"
 )
 
@@ -27,28 +29,59 @@ type Rule struct {
 	MaxHoldings     int         `json:"maxHoldings"`
 }
 
+type BacktestConfig struct {
+	EntryMode         string  `json:"entryMode"`
+	Slippage          float64 `json:"slippage"`
+	FeeRate           float64 `json:"feeRate"`
+	UseLimitRule      bool    `json:"useLimitRule"`
+	UseSuspensionRule bool    `json:"useSuspensionRule"`
+	MinDataCoverage   float64 `json:"minDataCoverage"`
+	FeatureVersion    string  `json:"featureVersion"`
+	BenchmarkCode     string  `json:"benchmarkCode"`
+}
+
+func DefaultBacktestConfig() BacktestConfig {
+	return BacktestConfig{
+		EntryMode:         "next_open",
+		Slippage:          0.0015,
+		FeeRate:           0.001,
+		UseLimitRule:      true,
+		UseSuspensionRule: true,
+		MinDataCoverage:   0.95,
+		FeatureVersion:    "daily_v1",
+		BenchmarkCode:     "sh000300",
+	}
+}
+
 // Signal 买入信号
 type Signal struct {
-	StockCode string
-	StockName string
-	Date      string
-	Price     float64
+	StockCode  string
+	StockName  string
+	Date       string
+	Price      float64
+	ReasonJSON string
 }
 
 // Trade 交易记录
 type Trade struct {
-	StockCode   string  `json:"stockCode"`
-	StockName   string  `json:"stockName"`
-	BuyDate     string  `json:"buyDate"`
-	SellDate    string  `json:"sellDate"`
-	BuyPrice    float64 `json:"buyPrice"`
-	SellPrice   float64 `json:"sellPrice"`
-	ReturnRate  float64 `json:"returnRate"`
-	MaxReturn   float64 `json:"maxReturn"`
-	MaxDrawdown float64 `json:"maxDrawdown"`
-	HoldDays    int     `json:"holdDays"`
-	ExitReason  string  `json:"exitReason"` // stop_loss / stop_gain / exit_condition / max_hold_days
-	Hit         bool    `json:"hit"`
+	StockCode       string    `json:"stockCode"`
+	StockName       string    `json:"stockName"`
+	SignalDate      string    `json:"signalDate"`
+	BuyDate         string    `json:"buyDate"`
+	SellDate        string    `json:"sellDate"`
+	BuyPrice        float64   `json:"buyPrice"`
+	SellPrice       float64   `json:"sellPrice"`
+	Fee             float64   `json:"fee"`
+	Slippage        float64   `json:"slippage"`
+	ReturnRate      float64   `json:"returnRate"`
+	MaxReturn       float64   `json:"maxReturn"`
+	MaxDrawdown     float64   `json:"maxDrawdown"`
+	HoldDays        int       `json:"holdDays"`
+	ExitReason      string    `json:"exitReason"` // stop_loss / stop_gain / exit_condition / max_hold_days
+	EntryReasonJSON string    `json:"entryReasonJson"`
+	FeatureVersion  string    `json:"featureVersion"`
+	DataAsOf        time.Time `json:"dataAsOf"`
+	Hit             bool      `json:"hit"`
 }
 
 // DailyNav 每日净值
@@ -61,24 +94,42 @@ type DailyNav struct {
 
 // ValidationResult 验证结果
 type ValidationResult struct {
-	WinRate     float64    `json:"winRate"`
-	AvgReturn   float64    `json:"avgReturn"`
-	MaxDrawdown float64    `json:"maxDrawdown"`
-	TradeCount  int        `json:"tradeCount"`
-	TotalReturn float64    `json:"totalReturn"`
-	DailyNAV    []DailyNav `json:"dailyNAV"`
-	Trades      []Trade    `json:"trades"`
+	WinRate              float64        `json:"winRate"`
+	AvgReturn            float64        `json:"avgReturn"`
+	MedianReturn         float64        `json:"medianReturn"`
+	ProfitLossRatio      float64        `json:"profitLossRatio"`
+	MaxDrawdown          float64        `json:"maxDrawdown"`
+	TradeCount           int            `json:"tradeCount"`
+	TotalReturn          float64        `json:"totalReturn"`
+	AnnualizedReturn     float64        `json:"annualizedReturn"`
+	OutSampleAvgReturn   float64        `json:"outSampleAvgReturn"`
+	OutSampleMaxDrawdown float64        `json:"outSampleMaxDrawdown"`
+	BenchmarkCode        string         `json:"benchmarkCode"`
+	BenchmarkReturn      float64        `json:"benchmarkReturn"`
+	ExcessReturn         float64        `json:"excessReturn"`
+	TurnoverRate         float64        `json:"turnoverRate"`
+	AverageHoldingDays   float64        `json:"averageHoldingDays"`
+	DataCoverage         float64        `json:"dataCoverage"`
+	NoLookaheadPassed    bool           `json:"noLookaheadPassed"`
+	BacktestConfig       BacktestConfig `json:"backtestConfig"`
+	DailyNAV             []DailyNav     `json:"dailyNAV"`
+	Trades               []Trade        `json:"trades"`
 }
 
 // Position 持仓
 type Position struct {
-	StockCode   string
-	StockName   string
-	BuyDate     string
-	BuyPrice    float64
-	BuyDayIndex int
-	MaxPrice    float64
-	MinPrice    float64
+	StockCode       string
+	StockName       string
+	SignalDate      string
+	BuyDate         string
+	BuyPrice        float64
+	BuyCost         float64
+	BuyDayIndex     int
+	MaxPrice        float64
+	MinPrice        float64
+	EntryReasonJSON string
+	FeatureVersion  string
+	DataAsOf        time.Time
 }
 
 // FeatureRepository 特征数据仓库
@@ -150,145 +201,37 @@ func (v *WalkForwardValidator) Validate(
 	endDate string,
 	timeHorizon int,
 ) (*ValidationResult, error) {
+	return v.ValidateWithConfig(rule, universe, startDate, endDate, timeHorizon, DefaultBacktestConfig())
+}
 
-	trades := make([]Trade, 0)
-	dailyNAV := make([]DailyNav, 0)
-
-	// 交易日历生成
+func (v *WalkForwardValidator) ValidateWithConfig(
+	rule Rule,
+	universe []string,
+	startDate string,
+	endDate string,
+	timeHorizon int,
+	config BacktestConfig,
+) (*ValidationResult, error) {
+	if config.EntryMode == "" {
+		config = DefaultBacktestConfig()
+	}
+	if config.BenchmarkCode == "" {
+		config.BenchmarkCode = DefaultBacktestConfig().BenchmarkCode
+	}
 	tradingDays := v.getTradingDays(startDate, endDate)
 	if len(tradingDays) == 0 {
 		return &ValidationResult{}, nil
 	}
-
-	portfolioValue := 1.0
-	maxPortfolioValue := 1.0
-
-	// 当前持仓
-	var positions []Position
-
-	for i, date := range tradingDays {
-		// 获取当日全部特征
-		features := v.repo.GetByDate(date, universe)
-		featureMap := make(map[string]models.StockFeature)
-		for _, f := range features {
-			featureMap[f.StockCode] = f
-		}
-
-		// 检查持仓是否需要卖出
-		nextPositions := make([]Position, 0)
-		var closedTrades []Trade
-		for _, pos := range positions {
-			exitPrice, exitReason := v.checkExit(rule, pos, featureMap, i, timeHorizon)
-			if exitPrice > 0 {
-				// 卖出
-				returnRate := (exitPrice - pos.BuyPrice) / pos.BuyPrice
-				trade := Trade{
-					StockCode:   pos.StockCode,
-					StockName:   pos.StockName,
-					BuyDate:     pos.BuyDate,
-					SellDate:    date,
-					BuyPrice:    pos.BuyPrice,
-					SellPrice:   exitPrice,
-					ReturnRate:  returnRate,
-					MaxReturn:   (pos.MaxPrice - pos.BuyPrice) / pos.BuyPrice,
-					MaxDrawdown: (pos.BuyPrice - pos.MinPrice) / pos.BuyPrice,
-					HoldDays:    i - pos.BuyDayIndex,
-					ExitReason:  exitReason,
-					Hit:         returnRate > 0,
-				}
-				closedTrades = append(closedTrades, trade)
-			} else {
-				// 继续持仓，更新最大/最小价
-				f, ok := featureMap[pos.StockCode]
-				if !ok {
-					nextPositions = append(nextPositions, pos)
-					continue
-				}
-				if f.High > pos.MaxPrice {
-					pos.MaxPrice = f.High
-				}
-				if f.Low < pos.MinPrice {
-					pos.MinPrice = f.Low
-				}
-				nextPositions = append(nextPositions, pos)
-			}
-		}
-		positions = nextPositions
-
-		// 计算当日收益
-		if len(closedTrades) > 0 {
-			trades = append(trades, closedTrades...)
-			for _, t := range closedTrades {
-				portfolioValue *= (1 + t.ReturnRate/float64(len(positions)+len(closedTrades)))
-			}
-		}
-
-		// 生成新的买入信号
-		heldStocks := make(map[string]bool, len(positions))
-		for _, pos := range positions {
-			heldStocks[pos.StockCode] = true
-		}
-		signals := v.generateSignals(rule, features)
-		for _, signal := range signals {
-			if heldStocks[signal.StockCode] {
-				continue
-			}
-			// 限制最大持仓数
-			if rule.MaxHoldings > 0 && len(positions) >= rule.MaxHoldings {
-				break
-			}
-			positions = append(positions, Position{
-				StockCode:   signal.StockCode,
-				StockName:   signal.StockName,
-				BuyDate:     signal.Date,
-				BuyPrice:    signal.Price,
-				BuyDayIndex: i,
-				MaxPrice:    signal.Price,
-				MinPrice:    signal.Price,
-			})
-			heldStocks[signal.StockCode] = true
-		}
-
-		if portfolioValue > maxPortfolioValue {
-			maxPortfolioValue = portfolioValue
-		}
-		drawdown := (maxPortfolioValue - portfolioValue) / maxPortfolioValue
-
-		dailyNAV = append(dailyNAV, DailyNav{
-			Date:       date,
-			Nav:        portfolioValue,
-			Drawdown:   drawdown,
-			TradeCount: len(signals),
-		})
+	result, err := NewPortfolioEngine(v.repo).RunBacktest(rule, universe, tradingDays, timeHorizon, config)
+	if err != nil {
+		return result, err
 	}
-
-	// 未平仓的按最后一日收盘价卖出
-	lastDate := tradingDays[len(tradingDays)-1]
-	for _, pos := range positions {
-		features := v.repo.GetByDate(lastDate, []string{pos.StockCode})
-		exitPrice := pos.BuyPrice
-		if len(features) > 0 {
-			exitPrice = features[0].Close
-		}
-		returnRate := (exitPrice - pos.BuyPrice) / pos.BuyPrice
-		trade := Trade{
-			StockCode:   pos.StockCode,
-			StockName:   pos.StockName,
-			BuyDate:     pos.BuyDate,
-			SellDate:    lastDate,
-			BuyPrice:    pos.BuyPrice,
-			SellPrice:   exitPrice,
-			ReturnRate:  returnRate,
-			MaxReturn:   (pos.MaxPrice - pos.BuyPrice) / pos.BuyPrice,
-			MaxDrawdown: (pos.BuyPrice - pos.MinPrice) / pos.BuyPrice,
-			HoldDays:    len(tradingDays) - 1 - pos.BuyDayIndex,
-			ExitReason:  "end_of_period",
-			Hit:         returnRate > 0,
-		}
-		trades = append(trades, trade)
-	}
-
-	return v.calculateMetrics(trades, dailyNAV), nil
+	result.DataCoverage = v.estimateDataCoverage(universe, tradingDays)
+	result.OutSampleAvgReturn, result.OutSampleMaxDrawdown = v.calculateOutSampleMetrics(result.Trades, startDate, endDate)
+	result.BenchmarkCode = config.BenchmarkCode
+	result.BenchmarkReturn = v.calculateBenchmarkReturn(config.BenchmarkCode, startDate, endDate)
+	result.ExcessReturn = result.TotalReturn - result.BenchmarkReturn
+	return result, nil
 }
 
 // checkExit 检查是否需要卖出
@@ -327,161 +270,244 @@ func (v *WalkForwardValidator) checkExit(rule Rule, pos Position, featureMap map
 	return 0, ""
 }
 
-// generateSignals 根据规则生成买入信号
-func (v *WalkForwardValidator) generateSignals(rule Rule, features []models.StockFeature) []Signal {
-	var signals []Signal
-	for _, f := range features {
-		if v.matchConditions(rule.EntryConditions, f) {
-			signals = append(signals, Signal{
-				StockCode: f.StockCode,
-				StockName: f.StockCode,
-				Date:      f.Date,
-				Price:     f.Close,
-			})
-		}
+func (v *WalkForwardValidator) canEnter(f models.StockFeature, config BacktestConfig) bool {
+	if config.UseSuspensionRule && (f.Open <= 0 || f.Close <= 0 || f.High <= 0 || f.Low <= 0 || f.Volume <= 0) {
+		return false
 	}
-	return signals
-}
-
-// matchConditions 匹配条件
-func (v *WalkForwardValidator) matchConditions(conditions []Condition, f models.StockFeature) bool {
-	for _, c := range conditions {
-		if !v.matchCondition(c, f) {
-			return false
-		}
+	if config.UseLimitRule && f.Open > 0 && f.High == f.Low {
+		return false
 	}
 	return true
 }
 
+// generateSignals 根据规则生成买入信号
+func (v *WalkForwardValidator) generateSignals(rule Rule, features []models.StockFeature) []Signal {
+	return NewStrategyEngine().GenerateSignals(rule, features)
+}
+
+// matchConditions 匹配条件
+func (v *WalkForwardValidator) matchConditions(conditions []Condition, f models.StockFeature) bool {
+	return NewStrategyEngine().MatchConditions(conditions, f)
+}
+
 // matchCondition 匹配单个条件
 func (v *WalkForwardValidator) matchCondition(c Condition, f models.StockFeature) bool {
-	value := v.getIndicatorValue(c.Indicator, f)
-	var ref float64
-	if c.Ref != "" {
-		ref = v.getIndicatorValue(c.Ref, f)
-	} else {
-		ref = c.Value
-	}
-
-	switch c.Operator {
-	case ">":
-		return value > ref
-	case ">=":
-		return value >= ref
-	case "<":
-		return value < ref
-	case "<=":
-		return value <= ref
-	case "==":
-		return value == ref
-	case "!=":
-		return value != ref
-	default:
-		return false
-	}
+	return NewStrategyEngine().MatchCondition(c, f)
 }
 
 // getIndicatorValue 获取指标数值
 func (v *WalkForwardValidator) getIndicatorValue(indicator string, f models.StockFeature) float64 {
-	switch indicator {
-	case "MA5":
-		return f.MA5
-	case "MA10":
-		return f.MA10
-	case "MA20":
-		return f.MA20
-	case "MA60":
-		return f.MA60
-	case "MACD":
-		return f.MACD
-	case "RSI6":
-		return f.RSI6
-	case "RSI12":
-		return f.RSI12
-	case "KDJ_K":
-		return f.KDJ_K
-	case "BOLLUpper":
-		return f.BOLLUpper
-	case "BOLLMid":
-		return f.BOLLMid
-	case "BOLLLower":
-		return f.BOLLLower
-	case "VolumeRatio":
-		return f.VolumeRatio
-	case "ATR":
-		return f.ATR
-	case "ChangeRate5":
-		return f.ChangeRate5
-	case "ChangeRate20":
-		return f.ChangeRate20
-	case "Close":
-		return f.Close
-	case "Open":
-		return f.Open
-	case "High":
-		return f.High
-	case "Low":
-		return f.Low
-	case "Volume":
-		return f.Volume
-	default:
-		return 0
-	}
+	return NewStrategyEngine().GetIndicatorValue(indicator, f)
 }
 
 // calculateMetrics 计算绩效指标
 func (v *WalkForwardValidator) calculateMetrics(trades []Trade, dailyNAV []DailyNav) *ValidationResult {
+	totalReturn := portfolioTotalReturn(dailyNAV)
+	annualizedReturn := annualizeReturn(totalReturn, len(dailyNAV))
+	portfolioMaxDrawdown := portfolioMaxDrawdown(dailyNAV)
+	turnoverRate := 0.0
+	if len(dailyNAV) > 0 {
+		turnoverRate = float64(len(trades)) / float64(len(dailyNAV))
+	}
 	if len(trades) == 0 {
 		return &ValidationResult{
-			WinRate:     0,
-			AvgReturn:   0,
-			MaxDrawdown: 0,
-			TradeCount:  0,
-			TotalReturn: 0,
-			DailyNAV:    dailyNAV,
-			Trades:      trades,
+			WinRate:           0,
+			AvgReturn:         0,
+			MedianReturn:      0,
+			ProfitLossRatio:   0,
+			MaxDrawdown:       portfolioMaxDrawdown,
+			TradeCount:        0,
+			TotalReturn:       totalReturn,
+			AnnualizedReturn:  annualizedReturn,
+			TurnoverRate:      turnoverRate,
+			NoLookaheadPassed: true,
+			DailyNAV:          dailyNAV,
+			Trades:            trades,
 		}
 	}
 
 	winCount := 0
-	totalReturn := 0.0
 	maxDrawdown := 0.0
+	grossProfit := 0.0
+	grossLoss := 0.0
+	totalHoldDays := 0
+	returns := make([]float64, 0, len(trades))
 
 	for _, t := range trades {
 		if t.Hit {
 			winCount++
 		}
-		totalReturn += t.ReturnRate
+		returns = append(returns, t.ReturnRate)
+		totalHoldDays += t.HoldDays
+		if t.ReturnRate >= 0 {
+			grossProfit += t.ReturnRate
+		} else {
+			grossLoss += -t.ReturnRate
+		}
 		if t.MaxDrawdown > maxDrawdown {
 			maxDrawdown = t.MaxDrawdown
 		}
 	}
+	if portfolioMaxDrawdown > maxDrawdown {
+		maxDrawdown = portfolioMaxDrawdown
+	}
 
 	winRate := float64(winCount) / float64(len(trades))
-	avgReturn := totalReturn / float64(len(trades))
+	avgReturn := 0.0
+	tradeReturnSum := 0.0
+	for _, value := range returns {
+		tradeReturnSum += value
+	}
+	avgReturn = tradeReturnSum / float64(len(trades))
+	sort.Float64s(returns)
+	medianReturn := returns[len(returns)/2]
+	if len(returns)%2 == 0 {
+		medianReturn = (returns[len(returns)/2-1] + returns[len(returns)/2]) / 2
+	}
+	avgHoldDays := float64(totalHoldDays) / float64(len(trades))
+	profitLossRatio := 0.0
+	if grossLoss > 0 {
+		profitLossRatio = grossProfit / grossLoss
+	} else if grossProfit > 0 {
+		profitLossRatio = grossProfit
+	}
 
 	return &ValidationResult{
-		WinRate:     winRate,
-		AvgReturn:   avgReturn,
-		MaxDrawdown: maxDrawdown,
-		TradeCount:  len(trades),
-		TotalReturn: totalReturn,
-		DailyNAV:    dailyNAV,
-		Trades:      trades,
+		WinRate:            winRate,
+		AvgReturn:          avgReturn,
+		MedianReturn:       medianReturn,
+		ProfitLossRatio:    profitLossRatio,
+		MaxDrawdown:        maxDrawdown,
+		TradeCount:         len(trades),
+		TotalReturn:        totalReturn,
+		AnnualizedReturn:   annualizedReturn,
+		TurnoverRate:       turnoverRate,
+		AverageHoldingDays: avgHoldDays,
+		NoLookaheadPassed:  true,
+		DailyNAV:           dailyNAV,
+		Trades:             trades,
 	}
 }
 
-// getTradingDays 获取交易日列表（简化版，实际应读取本地交易日历）
-func (v *WalkForwardValidator) getTradingDays(startDate, endDate string) []string {
-	var days []string
-	start, _ := time.Parse("2006-01-02", startDate)
-	end, _ := time.Parse("2006-01-02", endDate)
+func (v *WalkForwardValidator) estimateDataCoverage(universe []string, tradingDays []string) float64 {
+	if len(tradingDays) == 0 {
+		return 0
+	}
+	expectedStocks := len(universe)
+	if expectedStocks == 0 {
+		var stockCount int64
+		db.Dao.Model(&models.StockFeature{}).
+			Where("date >= ? AND date <= ?", tradingDays[0], tradingDays[len(tradingDays)-1]).
+			Distinct("stock_code").
+			Count(&stockCount)
+		expectedStocks = int(stockCount)
+	}
+	if expectedStocks == 0 {
+		return 0
+	}
+	var rows int64
+	query := db.Dao.Model(&models.StockFeature{}).
+		Where("date >= ? AND date <= ?", tradingDays[0], tradingDays[len(tradingDays)-1]).
+		Where("open > 0 AND close > 0 AND high > 0 AND low > 0 AND volume > 0")
+	if len(universe) > 0 {
+		query = query.Where("stock_code IN ?", universe)
+	}
+	query.Count(&rows)
+	expectedRows := expectedStocks * len(tradingDays)
+	if expectedRows == 0 {
+		return 0
+	}
+	return float64(rows) / float64(expectedRows)
+}
 
-	for d := start; !d.After(end); d = d.AddDate(0, 0, 1) {
-		if d.Weekday() != time.Saturday && d.Weekday() != time.Sunday {
-			days = append(days, d.Format("2006-01-02"))
+func (v *WalkForwardValidator) calculateOutSampleMetrics(trades []Trade, startDate, endDate string) (float64, float64) {
+	if len(trades) == 0 {
+		return 0, 0
+	}
+	start, err1 := time.Parse("2006-01-02", startDate)
+	end, err2 := time.Parse("2006-01-02", endDate)
+	if err1 != nil || err2 != nil || !end.After(start) {
+		return 0, 0
+	}
+	cutoff := start.Add(time.Duration(float64(end.Sub(start)) * 0.7))
+	count := 0
+	sum := 0.0
+	maxDrawdown := 0.0
+	for _, t := range trades {
+		buyDate, err := time.Parse("2006-01-02", t.BuyDate)
+		if err != nil || buyDate.Before(cutoff) {
+			continue
+		}
+		count++
+		sum += t.ReturnRate
+		if t.MaxDrawdown > maxDrawdown {
+			maxDrawdown = t.MaxDrawdown
 		}
 	}
+	if count == 0 {
+		return 0, 0
+	}
+	return sum / float64(count), maxDrawdown
+}
+
+func (v *WalkForwardValidator) calculateBenchmarkReturn(benchmarkCode string, startDate string, endDate string) float64 {
+	if benchmarkCode == "" {
+		return 0
+	}
+	var first models.StockFeature
+	if err := db.Dao.Where("stock_code IN ? AND date >= ? AND date <= ?", stockCodeVariants(benchmarkCode), startDate, endDate).
+		Order("date asc").
+		First(&first).Error; err != nil || first.Close <= 0 {
+		return 0
+	}
+	var last models.StockFeature
+	if err := db.Dao.Where("stock_code IN ? AND date >= ? AND date <= ?", stockCodeVariants(benchmarkCode), startDate, endDate).
+		Order("date desc").
+		First(&last).Error; err != nil || last.Close <= 0 {
+		return 0
+	}
+	return (last.Close - first.Close) / first.Close
+}
+
+func portfolioTotalReturn(dailyNAV []DailyNav) float64 {
+	if len(dailyNAV) == 0 {
+		return 0
+	}
+	first := dailyNAV[0].Nav
+	last := dailyNAV[len(dailyNAV)-1].Nav
+	if first <= 0 {
+		first = 1
+	}
+	return (last - first) / first
+}
+
+func annualizeReturn(totalReturn float64, tradingDays int) float64 {
+	if tradingDays <= 0 {
+		return 0
+	}
+	if totalReturn <= -1 {
+		return -1
+	}
+	return math.Pow(1+totalReturn, 252.0/float64(tradingDays)) - 1
+}
+
+func portfolioMaxDrawdown(dailyNAV []DailyNav) float64 {
+	maxDrawdown := 0.0
+	for _, nav := range dailyNAV {
+		if nav.Drawdown > maxDrawdown {
+			maxDrawdown = nav.Drawdown
+		}
+	}
+	return maxDrawdown
+}
+
+func (v *WalkForwardValidator) getTradingDays(startDate, endDate string) []string {
+	var days []string
+	db.Dao.Model(&models.StockFeature{}).
+		Where("date >= ? AND date <= ?", startDate, endDate).
+		Distinct("date").
+		Order("date asc").
+		Pluck("date", &days)
 	return days
 }
 

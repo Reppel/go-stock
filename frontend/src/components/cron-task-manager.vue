@@ -29,6 +29,11 @@
           style="width: 120px"
           clearable
         />
+
+        <n-space align="center" size="small">
+          <n-switch v-model:value="showSystemTasks" @update:value="handleSearch" />
+          <n-text depth="3">系统任务</n-text>
+        </n-space>
         
         <n-button type="primary"  @click="handleSearch">
           搜索
@@ -537,6 +542,7 @@ const editingTask = ref(false)
 const searchKeyword = ref('')
 const filterTaskType = ref('')
 const filterStatus = ref('')
+const showSystemTasks = ref(false)
 const currentPage = ref(1)
 const pageSize = ref(10)
 const total = ref(0)
@@ -1047,6 +1053,7 @@ const columns = [
             {
               size: 'tiny',
               type: 'primary',
+              disabled: row.isSystem,
               onClick: () => handleEdit(row)
             },
             {
@@ -1065,14 +1072,15 @@ const columns = [
                   NButton,
                   {
                     size: 'tiny',
-                    type: 'error'
+                    type: 'error',
+                    disabled: row.isSystem && row.allowDelete === false
                   },
                   {
                     icon: () => h(NIcon, { component: TrashOutline }),
                     default: () => '删除'
                   }
                 ),
-              default: () => `确定要删除任务 "${row.name}" 吗？`
+              default: () => row.isSystem ? '系统内置任务不建议删除，请使用暂停。' : `确定要删除任务 "${row.name}" 吗？`
             }
           )
         ]
@@ -1150,7 +1158,8 @@ const loadTaskList = async () => {
       pageSize: pageSize.value,
       name: searchKeyword.value,
       taskType: filterTaskType.value,
-      status: filterStatus.value
+      status: filterStatus.value,
+      includeSystem: showSystemTasks.value
     }
     
     const result = await GetCronTaskList(query)

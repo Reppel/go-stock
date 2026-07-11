@@ -84,3 +84,22 @@ func (s *StockPoolService) getGroupStockCodes(groupID string) []string {
 	// MVP 简化：返回自选股
 	return s.getFollowedStockCodes()
 }
+
+func stockNameOrCode(stockCode, fallback string) string {
+	code := strings.TrimSpace(stockCode)
+	numeric := strings.ToUpper(code)
+	if strings.HasPrefix(strings.ToLower(numeric), "sh") || strings.HasPrefix(strings.ToLower(numeric), "sz") || strings.HasPrefix(strings.ToLower(numeric), "bj") {
+		numeric = numeric[2:]
+	}
+	if dot := strings.Index(numeric, "."); dot >= 0 {
+		numeric = numeric[:dot]
+	}
+	var stock models.AllStockInfo
+	if db.Dao.Where("sec_uri_tycode = ? OR secucode IN ?", numeric, stockCodeVariants(code)).First(&stock).Error == nil && strings.TrimSpace(stock.SECURITYNAMEABBR) != "" {
+		return stock.SECURITYNAMEABBR
+	}
+	if strings.TrimSpace(fallback) != "" && !strings.EqualFold(strings.TrimSpace(fallback), code) {
+		return fallback
+	}
+	return code
+}

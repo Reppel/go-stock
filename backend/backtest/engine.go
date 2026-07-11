@@ -2,6 +2,7 @@ package backtest
 
 import (
 	"encoding/json"
+	"fmt"
 	"go-stock/backend/db"
 	"go-stock/backend/models"
 	"math"
@@ -33,6 +34,13 @@ type BacktestConfig struct {
 	EntryMode         string  `json:"entryMode"`
 	Slippage          float64 `json:"slippage"`
 	FeeRate           float64 `json:"feeRate"`
+	SellStampDuty     float64 `json:"sellStampDuty"`
+	MinCommission     float64 `json:"minCommission"`
+	InitialCapital    float64 `json:"initialCapital"`
+	LotSize           int     `json:"lotSize"`
+	MaxParticipation  float64 `json:"maxParticipation"`
+	ImpactCoefficient float64 `json:"impactCoefficient"`
+	UseT1Rule         bool    `json:"useT1Rule"`
 	UseLimitRule      bool    `json:"useLimitRule"`
 	UseSuspensionRule bool    `json:"useSuspensionRule"`
 	MinDataCoverage   float64 `json:"minDataCoverage"`
@@ -44,13 +52,59 @@ func DefaultBacktestConfig() BacktestConfig {
 	return BacktestConfig{
 		EntryMode:         "next_open",
 		Slippage:          0.0015,
-		FeeRate:           0.001,
+		FeeRate:           0.0003,
+		SellStampDuty:     0.0005,
+		MinCommission:     5,
+		InitialCapital:    1_000_000,
+		LotSize:           100,
+		MaxParticipation:  0.05,
+		ImpactCoefficient: 0.002,
+		UseT1Rule:         true,
 		UseLimitRule:      true,
 		UseSuspensionRule: true,
 		MinDataCoverage:   0.95,
-		FeatureVersion:    "daily_v1",
+		FeatureVersion:    CurrentFeatureVersion,
 		BenchmarkCode:     "sh000300",
 	}
+}
+
+func normalizeBacktestConfig(config BacktestConfig) BacktestConfig {
+	defaults := DefaultBacktestConfig()
+	if config.EntryMode == "" {
+		config.EntryMode = defaults.EntryMode
+	}
+	if config.Slippage < 0 {
+		config.Slippage = defaults.Slippage
+	}
+	if config.FeeRate <= 0 {
+		config.FeeRate = defaults.FeeRate
+	}
+	if config.SellStampDuty <= 0 {
+		config.SellStampDuty = defaults.SellStampDuty
+	}
+	if config.MinCommission <= 0 {
+		config.MinCommission = defaults.MinCommission
+	}
+	if config.InitialCapital <= 0 {
+		config.InitialCapital = defaults.InitialCapital
+	}
+	if config.LotSize <= 0 {
+		config.LotSize = defaults.LotSize
+	}
+	if config.MaxParticipation <= 0 || config.MaxParticipation > 1 {
+		config.MaxParticipation = defaults.MaxParticipation
+	}
+	if config.ImpactCoefficient <= 0 {
+		config.ImpactCoefficient = defaults.ImpactCoefficient
+	}
+	if config.FeatureVersion == "" {
+		config.FeatureVersion = defaults.FeatureVersion
+	}
+	if config.BenchmarkCode == "" {
+		config.BenchmarkCode = defaults.BenchmarkCode
+	}
+	config.UseT1Rule = true
+	return config
 }
 
 // Signal 买入信号
@@ -59,6 +113,7 @@ type Signal struct {
 	StockName  string
 	Date       string
 	Price      float64
+	Score      float64
 	ReasonJSON string
 }
 
@@ -71,6 +126,9 @@ type Trade struct {
 	SellDate        string    `json:"sellDate"`
 	BuyPrice        float64   `json:"buyPrice"`
 	SellPrice       float64   `json:"sellPrice"`
+	Quantity        float64   `json:"quantity"`
+	GrossBuyAmount  float64   `json:"grossBuyAmount"`
+	GrossSellAmount float64   `json:"grossSellAmount"`
 	Fee             float64   `json:"fee"`
 	Slippage        float64   `json:"slippage"`
 	ReturnRate      float64   `json:"returnRate"`
@@ -94,26 +152,42 @@ type DailyNav struct {
 
 // ValidationResult 验证结果
 type ValidationResult struct {
-	WinRate              float64        `json:"winRate"`
-	AvgReturn            float64        `json:"avgReturn"`
-	MedianReturn         float64        `json:"medianReturn"`
-	ProfitLossRatio      float64        `json:"profitLossRatio"`
-	MaxDrawdown          float64        `json:"maxDrawdown"`
-	TradeCount           int            `json:"tradeCount"`
-	TotalReturn          float64        `json:"totalReturn"`
-	AnnualizedReturn     float64        `json:"annualizedReturn"`
-	OutSampleAvgReturn   float64        `json:"outSampleAvgReturn"`
-	OutSampleMaxDrawdown float64        `json:"outSampleMaxDrawdown"`
-	BenchmarkCode        string         `json:"benchmarkCode"`
-	BenchmarkReturn      float64        `json:"benchmarkReturn"`
-	ExcessReturn         float64        `json:"excessReturn"`
-	TurnoverRate         float64        `json:"turnoverRate"`
-	AverageHoldingDays   float64        `json:"averageHoldingDays"`
-	DataCoverage         float64        `json:"dataCoverage"`
-	NoLookaheadPassed    bool           `json:"noLookaheadPassed"`
-	BacktestConfig       BacktestConfig `json:"backtestConfig"`
-	DailyNAV             []DailyNav     `json:"dailyNAV"`
-	Trades               []Trade        `json:"trades"`
+	WinRate              float64           `json:"winRate"`
+	AvgReturn            float64           `json:"avgReturn"`
+	MedianReturn         float64           `json:"medianReturn"`
+	ProfitLossRatio      float64           `json:"profitLossRatio"`
+	MaxDrawdown          float64           `json:"maxDrawdown"`
+	TradeCount           int               `json:"tradeCount"`
+	TotalReturn          float64           `json:"totalReturn"`
+	AnnualizedReturn     float64           `json:"annualizedReturn"`
+	AnnualizedVolatility float64           `json:"annualizedVolatility"`
+	SharpeRatio          float64           `json:"sharpeRatio"`
+	SortinoRatio         float64           `json:"sortinoRatio"`
+	CalmarRatio          float64           `json:"calmarRatio"`
+	MaxSingleTradeLoss   float64           `json:"maxSingleTradeLoss"`
+	OutSampleAvgReturn   float64           `json:"outSampleAvgReturn"`
+	OutSampleMaxDrawdown float64           `json:"outSampleMaxDrawdown"`
+	OutSampleTradeCount  int               `json:"outSampleTradeCount"`
+	BenchmarkCode        string            `json:"benchmarkCode"`
+	BenchmarkReturn      float64           `json:"benchmarkReturn"`
+	BenchmarkAvailable   bool              `json:"benchmarkAvailable"`
+	ExcessReturn         float64           `json:"excessReturn"`
+	TurnoverRate         float64           `json:"turnoverRate"`
+	AverageHoldingDays   float64           `json:"averageHoldingDays"`
+	DataCoverage         float64           `json:"dataCoverage"`
+	NoLookaheadPassed    bool              `json:"noLookaheadPassed"`
+	BacktestConfig       BacktestConfig    `json:"backtestConfig"`
+	DailyNAV             []DailyNav        `json:"dailyNAV"`
+	Trades               []Trade           `json:"trades"`
+	WalkForwardFolds     []WalkForwardFold `json:"walkForwardFolds"`
+}
+
+type WalkForwardFold struct {
+	StartDate   string  `json:"startDate"`
+	EndDate     string  `json:"endDate"`
+	TradeCount  int     `json:"tradeCount"`
+	AvgReturn   float64 `json:"avgReturn"`
+	MaxDrawdown float64 `json:"maxDrawdown"`
 }
 
 // Position 持仓
@@ -133,17 +207,27 @@ type Position struct {
 }
 
 // FeatureRepository 特征数据仓库
-type FeatureRepository struct{}
+type FeatureRepository struct {
+	featureVersion string
+}
 
 func NewFeatureRepository() *FeatureRepository {
-	return &FeatureRepository{}
+	return NewFeatureRepositoryForVersion(CurrentFeatureVersion)
+}
+
+func NewFeatureRepositoryForVersion(featureVersion string) *FeatureRepository {
+	if featureVersion == "" {
+		featureVersion = CurrentFeatureVersion
+	}
+	return &FeatureRepository{featureVersion: featureVersion}
 }
 
 // GetByDate 获取某交易日全部特征
 func (r *FeatureRepository) GetByDate(date string, universe []string) []models.StockFeature {
 	var features []models.StockFeature
+	query := db.Dao.Where("date = ? AND feature_version = ?", date, r.featureVersion)
 	if len(universe) == 0 {
-		db.Dao.Where("date = ?", date).Find(&features)
+		query.Find(&features)
 		return features
 	}
 
@@ -153,7 +237,7 @@ func (r *FeatureRepository) GetByDate(date string, universe []string) []models.S
 			end = len(universe)
 		}
 		var chunkFeatures []models.StockFeature
-		db.Dao.Where("date = ? AND stock_code IN ?", date, universe[start:end]).Find(&chunkFeatures)
+		query.Where("stock_code IN ?", universe[start:end]).Find(&chunkFeatures)
 		features = append(features, chunkFeatures...)
 	}
 	return features
@@ -162,7 +246,7 @@ func (r *FeatureRepository) GetByDate(date string, universe []string) []models.S
 // GetFeatureRange 获取某股票日期区间特征
 func (r *FeatureRepository) GetFeatureRange(stockCode, startDate, endDate string) []models.StockFeature {
 	var features []models.StockFeature
-	db.Dao.Where("stock_code = ? AND date >= ? AND date <= ?", stockCode, startDate, endDate).
+	db.Dao.Where("stock_code = ? AND date >= ? AND date <= ? AND feature_version = ?", stockCode, startDate, endDate, r.featureVersion).
 		Order("date asc").
 		Find(&features)
 	return features
@@ -170,7 +254,15 @@ func (r *FeatureRepository) GetFeatureRange(stockCode, startDate, endDate string
 
 func (r *FeatureRepository) GetFirstOnOrAfter(stockCode, date string) (models.StockFeature, bool) {
 	var feature models.StockFeature
-	err := db.Dao.Where("stock_code = ? AND date >= ?", stockCode, date).
+	err := db.Dao.Where("stock_code = ? AND date >= ? AND feature_version = ?", stockCode, date, r.featureVersion).
+		Order("date asc").
+		First(&feature).Error
+	return feature, err == nil
+}
+
+func (r *FeatureRepository) GetFirstAfter(stockCode, date string) (models.StockFeature, bool) {
+	var feature models.StockFeature
+	err := db.Dao.Where("stock_code = ? AND date > ? AND feature_version = ?", stockCode, date, r.featureVersion).
 		Order("date asc").
 		First(&feature).Error
 	return feature, err == nil
@@ -212,25 +304,27 @@ func (v *WalkForwardValidator) ValidateWithConfig(
 	timeHorizon int,
 	config BacktestConfig,
 ) (*ValidationResult, error) {
-	if config.EntryMode == "" {
-		config = DefaultBacktestConfig()
-	}
-	if config.BenchmarkCode == "" {
-		config.BenchmarkCode = DefaultBacktestConfig().BenchmarkCode
-	}
-	tradingDays := v.getTradingDays(startDate, endDate)
+	config = normalizeBacktestConfig(config)
+	tradingDays := v.getTradingDays(startDate, endDate, config.FeatureVersion, config.BenchmarkCode)
 	if len(tradingDays) == 0 {
 		return &ValidationResult{}, nil
 	}
-	result, err := NewPortfolioEngine(v.repo).RunBacktest(rule, universe, tradingDays, timeHorizon, config)
+	repo := NewFeatureRepositoryForVersion(config.FeatureVersion)
+	result, err := NewPortfolioEngine(repo).RunBacktest(rule, universe, tradingDays, timeHorizon, config)
 	if err != nil {
 		return result, err
 	}
-	result.DataCoverage = v.estimateDataCoverage(universe, tradingDays)
-	result.OutSampleAvgReturn, result.OutSampleMaxDrawdown = v.calculateOutSampleMetrics(result.Trades, startDate, endDate)
+	result.DataCoverage = v.estimateDataCoverage(universe, tradingDays, config.FeatureVersion)
+	result.WalkForwardFolds, result.OutSampleAvgReturn, result.OutSampleMaxDrawdown, result.OutSampleTradeCount =
+		v.calculateWalkForwardMetrics(result.Trades, result.DailyNAV, tradingDays, timeHorizon)
 	result.BenchmarkCode = config.BenchmarkCode
-	result.BenchmarkReturn = v.calculateBenchmarkReturn(config.BenchmarkCode, startDate, endDate)
-	result.ExcessReturn = result.TotalReturn - result.BenchmarkReturn
+	result.BenchmarkReturn, result.BenchmarkAvailable = v.calculateBenchmarkReturn(config.BenchmarkCode, startDate, endDate, config.FeatureVersion)
+	if result.BenchmarkAvailable {
+		result.ExcessReturn = result.TotalReturn - result.BenchmarkReturn
+	}
+	if config.MinDataCoverage > 0 && result.DataCoverage < config.MinDataCoverage {
+		return result, fmt.Errorf("特征覆盖率 %.1f%% 低于最低要求 %.1f%%", result.DataCoverage*100, config.MinDataCoverage*100)
+	}
 	return result, nil
 }
 
@@ -305,31 +399,36 @@ func (v *WalkForwardValidator) calculateMetrics(trades []Trade, dailyNAV []Daily
 	totalReturn := portfolioTotalReturn(dailyNAV)
 	annualizedReturn := annualizeReturn(totalReturn, len(dailyNAV))
 	portfolioMaxDrawdown := portfolioMaxDrawdown(dailyNAV)
-	turnoverRate := 0.0
-	if len(dailyNAV) > 0 {
-		turnoverRate = float64(len(trades)) / float64(len(dailyNAV))
-	}
+	annualizedVolatility, downsideVolatility := navVolatility(dailyNAV)
+	sharpe := safeRatio(annualizedReturn, annualizedVolatility)
+	sortino := safeRatio(annualizedReturn, downsideVolatility)
+	calmar := safeRatio(annualizedReturn, portfolioMaxDrawdown)
 	if len(trades) == 0 {
 		return &ValidationResult{
-			WinRate:           0,
-			AvgReturn:         0,
-			MedianReturn:      0,
-			ProfitLossRatio:   0,
-			MaxDrawdown:       portfolioMaxDrawdown,
-			TradeCount:        0,
-			TotalReturn:       totalReturn,
-			AnnualizedReturn:  annualizedReturn,
-			TurnoverRate:      turnoverRate,
-			NoLookaheadPassed: true,
-			DailyNAV:          dailyNAV,
-			Trades:            trades,
+			WinRate:              0,
+			AvgReturn:            0,
+			MedianReturn:         0,
+			ProfitLossRatio:      0,
+			MaxDrawdown:          portfolioMaxDrawdown,
+			TradeCount:           0,
+			TotalReturn:          totalReturn,
+			AnnualizedReturn:     annualizedReturn,
+			AnnualizedVolatility: annualizedVolatility,
+			SharpeRatio:          sharpe,
+			SortinoRatio:         sortino,
+			CalmarRatio:          calmar,
+			NoLookaheadPassed:    true,
+			DailyNAV:             dailyNAV,
+			Trades:               trades,
 		}
 	}
 
 	winCount := 0
-	maxDrawdown := 0.0
 	grossProfit := 0.0
 	grossLoss := 0.0
+	winningTrades := 0
+	losingTrades := 0
+	maxSingleTradeLoss := 0.0
 	totalHoldDays := 0
 	returns := make([]float64, 0, len(trades))
 
@@ -341,15 +440,14 @@ func (v *WalkForwardValidator) calculateMetrics(trades []Trade, dailyNAV []Daily
 		totalHoldDays += t.HoldDays
 		if t.ReturnRate >= 0 {
 			grossProfit += t.ReturnRate
+			winningTrades++
 		} else {
 			grossLoss += -t.ReturnRate
+			losingTrades++
+			if -t.ReturnRate > maxSingleTradeLoss {
+				maxSingleTradeLoss = -t.ReturnRate
+			}
 		}
-		if t.MaxDrawdown > maxDrawdown {
-			maxDrawdown = t.MaxDrawdown
-		}
-	}
-	if portfolioMaxDrawdown > maxDrawdown {
-		maxDrawdown = portfolioMaxDrawdown
 	}
 
 	winRate := float64(winCount) / float64(len(trades))
@@ -366,30 +464,34 @@ func (v *WalkForwardValidator) calculateMetrics(trades []Trade, dailyNAV []Daily
 	}
 	avgHoldDays := float64(totalHoldDays) / float64(len(trades))
 	profitLossRatio := 0.0
-	if grossLoss > 0 {
-		profitLossRatio = grossProfit / grossLoss
+	if grossLoss > 0 && losingTrades > 0 && winningTrades > 0 {
+		profitLossRatio = (grossProfit / float64(winningTrades)) / (grossLoss / float64(losingTrades))
 	} else if grossProfit > 0 {
-		profitLossRatio = grossProfit
+		profitLossRatio = grossProfit / float64(maxInt(winningTrades, 1))
 	}
 
 	return &ValidationResult{
-		WinRate:            winRate,
-		AvgReturn:          avgReturn,
-		MedianReturn:       medianReturn,
-		ProfitLossRatio:    profitLossRatio,
-		MaxDrawdown:        maxDrawdown,
-		TradeCount:         len(trades),
-		TotalReturn:        totalReturn,
-		AnnualizedReturn:   annualizedReturn,
-		TurnoverRate:       turnoverRate,
-		AverageHoldingDays: avgHoldDays,
-		NoLookaheadPassed:  true,
-		DailyNAV:           dailyNAV,
-		Trades:             trades,
+		WinRate:              winRate,
+		AvgReturn:            avgReturn,
+		MedianReturn:         medianReturn,
+		ProfitLossRatio:      profitLossRatio,
+		MaxDrawdown:          portfolioMaxDrawdown,
+		TradeCount:           len(trades),
+		TotalReturn:          totalReturn,
+		AnnualizedReturn:     annualizedReturn,
+		AnnualizedVolatility: annualizedVolatility,
+		SharpeRatio:          sharpe,
+		SortinoRatio:         sortino,
+		CalmarRatio:          calmar,
+		MaxSingleTradeLoss:   maxSingleTradeLoss,
+		AverageHoldingDays:   avgHoldDays,
+		NoLookaheadPassed:    true,
+		DailyNAV:             dailyNAV,
+		Trades:               trades,
 	}
 }
 
-func (v *WalkForwardValidator) estimateDataCoverage(universe []string, tradingDays []string) float64 {
+func (v *WalkForwardValidator) estimateDataCoverage(universe []string, tradingDays []string, featureVersion string) float64 {
 	if len(tradingDays) == 0 {
 		return 0
 	}
@@ -397,7 +499,7 @@ func (v *WalkForwardValidator) estimateDataCoverage(universe []string, tradingDa
 	if expectedStocks == 0 {
 		var stockCount int64
 		db.Dao.Model(&models.StockFeature{}).
-			Where("date >= ? AND date <= ?", tradingDays[0], tradingDays[len(tradingDays)-1]).
+			Where("date >= ? AND date <= ? AND feature_version = ?", tradingDays[0], tradingDays[len(tradingDays)-1], featureVersion).
 			Distinct("stock_code").
 			Count(&stockCount)
 		expectedStocks = int(stockCount)
@@ -407,8 +509,8 @@ func (v *WalkForwardValidator) estimateDataCoverage(universe []string, tradingDa
 	}
 	var rows int64
 	query := db.Dao.Model(&models.StockFeature{}).
-		Where("date >= ? AND date <= ?", tradingDays[0], tradingDays[len(tradingDays)-1]).
-		Where("open > 0 AND close > 0 AND high > 0 AND low > 0 AND volume > 0")
+		Where("date >= ? AND date <= ? AND feature_version = ?", tradingDays[0], tradingDays[len(tradingDays)-1], featureVersion).
+		Where("open > 0 AND close > 0 AND high > 0 AND low > 0 AND volume > 0 AND adjusted = ?", true)
 	if len(universe) > 0 {
 		query = query.Where("stock_code IN ?", universe)
 	}
@@ -417,56 +519,76 @@ func (v *WalkForwardValidator) estimateDataCoverage(universe []string, tradingDa
 	if expectedRows == 0 {
 		return 0
 	}
-	return float64(rows) / float64(expectedRows)
+	return math.Min(float64(rows)/float64(expectedRows), 1)
 }
 
-func (v *WalkForwardValidator) calculateOutSampleMetrics(trades []Trade, startDate, endDate string) (float64, float64) {
-	if len(trades) == 0 {
-		return 0, 0
+func (v *WalkForwardValidator) calculateWalkForwardMetrics(trades []Trade, nav []DailyNav, tradingDays []string, purgeDays int) ([]WalkForwardFold, float64, float64, int) {
+	if len(tradingDays) < 10 {
+		return nil, 0, 0, 0
 	}
-	start, err1 := time.Parse("2006-01-02", startDate)
-	end, err2 := time.Parse("2006-01-02", endDate)
-	if err1 != nil || err2 != nil || !end.After(start) {
-		return 0, 0
+	if purgeDays < 1 {
+		purgeDays = 1
 	}
-	cutoff := start.Add(time.Duration(float64(end.Sub(start)) * 0.7))
-	count := 0
-	sum := 0.0
+	firstTest := int(float64(len(tradingDays)) * 0.4)
+	remaining := len(tradingDays) - firstTest
+	foldSize := remaining / 3
+	if foldSize < 2 {
+		firstTest = int(float64(len(tradingDays)) * 0.7)
+		foldSize = len(tradingDays) - firstTest
+	}
+	folds := make([]WalkForwardFold, 0, 3)
+	outReturns := make([]float64, 0)
 	maxDrawdown := 0.0
-	for _, t := range trades {
-		buyDate, err := time.Parse("2006-01-02", t.BuyDate)
-		if err != nil || buyDate.Before(cutoff) {
+	for foldIndex, startIndex := 0, firstTest; startIndex < len(tradingDays) && foldIndex < 3; foldIndex, startIndex = foldIndex+1, startIndex+foldSize {
+		testStart := startIndex + purgeDays
+		if testStart >= len(tradingDays) {
+			break
+		}
+		testEnd := startIndex + foldSize - 1
+		if foldIndex == 2 || testEnd >= len(tradingDays) {
+			testEnd = len(tradingDays) - 1
+		}
+		if testStart > testEnd {
 			continue
 		}
-		count++
-		sum += t.ReturnRate
-		if t.MaxDrawdown > maxDrawdown {
-			maxDrawdown = t.MaxDrawdown
+		startDate := tradingDays[testStart]
+		endDate := tradingDays[testEnd]
+		foldReturns := make([]float64, 0)
+		for _, trade := range trades {
+			if trade.BuyDate >= startDate && trade.BuyDate <= endDate {
+				foldReturns = append(foldReturns, trade.ReturnRate)
+				outReturns = append(outReturns, trade.ReturnRate)
+			}
 		}
+		foldDrawdown := navRangeMaxDrawdown(nav, startDate, endDate)
+		if foldDrawdown > maxDrawdown {
+			maxDrawdown = foldDrawdown
+		}
+		folds = append(folds, WalkForwardFold{
+			StartDate: startDate, EndDate: endDate, TradeCount: len(foldReturns),
+			AvgReturn: mean(foldReturns), MaxDrawdown: foldDrawdown,
+		})
 	}
-	if count == 0 {
-		return 0, 0
-	}
-	return sum / float64(count), maxDrawdown
+	return folds, mean(outReturns), maxDrawdown, len(outReturns)
 }
 
-func (v *WalkForwardValidator) calculateBenchmarkReturn(benchmarkCode string, startDate string, endDate string) float64 {
+func (v *WalkForwardValidator) calculateBenchmarkReturn(benchmarkCode string, startDate string, endDate string, featureVersion string) (float64, bool) {
 	if benchmarkCode == "" {
-		return 0
+		return 0, false
 	}
 	var first models.StockFeature
-	if err := db.Dao.Where("stock_code IN ? AND date >= ? AND date <= ?", stockCodeVariants(benchmarkCode), startDate, endDate).
+	if err := db.Dao.Where("stock_code IN ? AND date >= ? AND date <= ? AND feature_version = ?", stockCodeVariants(benchmarkCode), startDate, endDate, featureVersion).
 		Order("date asc").
 		First(&first).Error; err != nil || first.Close <= 0 {
-		return 0
+		return 0, false
 	}
 	var last models.StockFeature
-	if err := db.Dao.Where("stock_code IN ? AND date >= ? AND date <= ?", stockCodeVariants(benchmarkCode), startDate, endDate).
+	if err := db.Dao.Where("stock_code IN ? AND date >= ? AND date <= ? AND feature_version = ?", stockCodeVariants(benchmarkCode), startDate, endDate, featureVersion).
 		Order("date desc").
 		First(&last).Error; err != nil || last.Close <= 0 {
-		return 0
+		return 0, false
 	}
-	return (last.Close - first.Close) / first.Close
+	return (last.Close - first.Close) / first.Close, true
 }
 
 func portfolioTotalReturn(dailyNAV []DailyNav) float64 {
@@ -501,10 +623,98 @@ func portfolioMaxDrawdown(dailyNAV []DailyNav) float64 {
 	return maxDrawdown
 }
 
-func (v *WalkForwardValidator) getTradingDays(startDate, endDate string) []string {
+func navVolatility(dailyNAV []DailyNav) (annualized, downsideAnnualized float64) {
+	if len(dailyNAV) < 2 {
+		return 0, 0
+	}
+	returns := make([]float64, 0, len(dailyNAV)-1)
+	downsideSquares := 0.0
+	downsideCount := 0
+	for index := 1; index < len(dailyNAV); index++ {
+		previous := dailyNAV[index-1].Nav
+		if previous <= 0 {
+			continue
+		}
+		value := dailyNAV[index].Nav/previous - 1
+		returns = append(returns, value)
+		if value < 0 {
+			downsideSquares += value * value
+			downsideCount++
+		}
+	}
+	if len(returns) < 2 {
+		return 0, 0
+	}
+	average := mean(returns)
+	variance := 0.0
+	for _, value := range returns {
+		variance += math.Pow(value-average, 2)
+	}
+	variance /= float64(len(returns) - 1)
+	annualized = math.Sqrt(variance) * math.Sqrt(252)
+	if downsideCount > 0 {
+		downsideAnnualized = math.Sqrt(downsideSquares/float64(downsideCount)) * math.Sqrt(252)
+	}
+	return annualized, downsideAnnualized
+}
+
+func navRangeMaxDrawdown(dailyNAV []DailyNav, startDate, endDate string) float64 {
+	peak := 0.0
+	maxDrawdown := 0.0
+	for _, daily := range dailyNAV {
+		if daily.Date < startDate || daily.Date > endDate {
+			continue
+		}
+		if daily.Nav > peak {
+			peak = daily.Nav
+		}
+		if peak > 0 {
+			drawdown := (peak - daily.Nav) / peak
+			if drawdown > maxDrawdown {
+				maxDrawdown = drawdown
+			}
+		}
+	}
+	return clamp(maxDrawdown, 0, 1)
+}
+
+func safeRatio(numerator, denominator float64) float64 {
+	if denominator <= 0 || math.IsNaN(denominator) || math.IsInf(denominator, 0) {
+		return 0
+	}
+	return numerator / denominator
+}
+
+func mean(values []float64) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+	sum := 0.0
+	for _, value := range values {
+		sum += value
+	}
+	return sum / float64(len(values))
+}
+
+func maxInt(left, right int) int {
+	if left > right {
+		return left
+	}
+	return right
+}
+
+func (v *WalkForwardValidator) getTradingDays(startDate, endDate, featureVersion, benchmarkCode string) []string {
 	var days []string
 	db.Dao.Model(&models.StockFeature{}).
-		Where("date >= ? AND date <= ?", startDate, endDate).
+		Where("stock_code IN ? AND date >= ? AND date <= ? AND feature_version = ?", stockCodeVariants(benchmarkCode), startDate, endDate, featureVersion).
+		Distinct("date").
+		Order("date asc").
+		Pluck("date", &days)
+	if len(days) > 0 {
+		return days
+	}
+	db.Dao.Model(&models.StockFeature{}).
+		Where("date >= ? AND date <= ? AND feature_version = ?", startDate, endDate, featureVersion).
 		Distinct("date").
 		Order("date asc").
 		Pluck("date", &days)

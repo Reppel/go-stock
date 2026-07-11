@@ -3030,11 +3030,11 @@ func (a *App) initPredictionCronTasks(cronApi *agent.CronTaskApi) {
 	predictionTasks := []models.CronTask{
 		{
 			Name:        "预测工厂-同步特征",
-			CronExpr:    "0 0 3 * * *",
+			CronExpr:    "0 10 15 * * 1-5",
 			TaskType:    "prediction_sync_features",
 			Enable:      true,
 			Status:      "active",
-			Description: "每天凌晨 3 点同步 AI 预测工厂股票特征数据",
+			Description: "工作日收盘后同步前复权技术特征，供随后信号扫描使用",
 			Params:      `{"stockScope":"自选股","days":365}`,
 		},
 		{

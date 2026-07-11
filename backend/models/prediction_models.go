@@ -4,14 +4,15 @@ import "time"
 
 // PredictionSession 用户一次完整的预测请求
 type PredictionSession struct {
-	ID         uint      `json:"id" gorm:"primarykey" md:"-"`
-	Scene      string    `json:"scene" gorm:"size:50;index" md:"预测场景"` // 短线爆发/波段反弹/趋势持有
-	StockScope string    `json:"stockScope" gorm:"size:100" md:"股票池"`  // 全市场/自选股/某分组
-	StartDate  string    `json:"startDate" gorm:"size:10" md:"回测开始日期"` // 回测开始
-	EndDate    string    `json:"endDate" gorm:"size:10" md:"回测结束日期"`   // 回测结束
-	Status     string    `json:"status" gorm:"size:20" md:"状态"`        // running/done/failed
-	ErrorMsg   string    `json:"errorMsg" gorm:"size:500" md:"错误信息"`
-	CreatedAt  time.Time `json:"createdAt" gorm:"autoCreateTime" md:"-"`
+	ID           uint      `json:"id" gorm:"primarykey" md:"-"`
+	Scene        string    `json:"scene" gorm:"size:50;index" md:"预测场景"` // 短线爆发/波段反弹/趋势持有
+	StockScope   string    `json:"stockScope" gorm:"size:100" md:"股票池"`  // 全市场/自选股/某分组
+	UniverseJSON string    `json:"universeJson" gorm:"type:text" md:"股票池快照JSON"`
+	StartDate    string    `json:"startDate" gorm:"size:10" md:"回测开始日期"` // 回测开始
+	EndDate      string    `json:"endDate" gorm:"size:10" md:"回测结束日期"`   // 回测结束
+	Status       string    `json:"status" gorm:"size:20" md:"状态"`        // running/done/failed
+	ErrorMsg     string    `json:"errorMsg" gorm:"size:500" md:"错误信息"`
+	CreatedAt    time.Time `json:"createdAt" gorm:"autoCreateTime" md:"-"`
 }
 
 func (PredictionSession) TableName() string {
@@ -38,6 +39,8 @@ type PredictionHypothesis struct {
 	ProfitLossRatio      float64   `json:"profitLossRatio" md:"盈亏比"`
 	OutSampleAvgReturn   float64   `json:"outSampleAvgReturn" md:"样本外平均收益"`
 	OutSampleMaxDrawdown float64   `json:"outSampleMaxDrawdown" md:"样本外最大回撤"`
+	OutSampleTradeCount  int       `json:"outSampleTradeCount" md:"样本外交易次数"`
+	BenchmarkAvailable   bool      `json:"benchmarkAvailable" gorm:"default:false" md:"基准数据可用"`
 	DataCoverage         float64   `json:"dataCoverage" md:"数据覆盖率"`
 	NoLookaheadPassed    bool      `json:"noLookaheadPassed" gorm:"default:false" md:"未来函数检查"`
 	BacktestConfigJSON   string    `json:"backtestConfigJson" gorm:"type:text" md:"回测配置"`
@@ -72,6 +75,8 @@ type PredictionDecision struct {
 	QualityRating         string    `json:"qualityRating" gorm:"size:20" md:"回测质量"`
 	RiskLevel             string    `json:"riskLevel" gorm:"size:20" md:"风险等级"`
 	Score                 float64   `json:"score" md:"综合评分"`
+	Probability           float64   `json:"probability" md:"校准后上涨概率"`
+	ExpectedReturn        float64   `json:"expectedReturn" md:"预期净收益"`
 	CurrentPrice          float64   `json:"currentPrice" md:"当前价"`
 	ReferencePrice        float64   `json:"referencePrice" md:"特征参考价"`
 	CostPrice             float64   `json:"costPrice" md:"持仓成本价"`
@@ -144,6 +149,7 @@ type PredictionSignal struct {
 	StockName    string    `json:"stockName" gorm:"size:50" md:"股票名称"`
 	SignalDate   string    `json:"signalDate" gorm:"size:10;index;index:idx_prediction_signal_unique,unique" md:"信号日期"` // 信号日
 	EntryPrice   float64   `json:"entryPrice" md:"买入价"`
+	EntryDate    string    `json:"entryDate" gorm:"size:10" md:"实际模拟入场日"`
 	TargetDate   string    `json:"targetDate" gorm:"size:10" md:"目标验证日"` // 目标验证日
 	TargetReturn float64   `json:"targetReturn" md:"目标收益率"`
 	ActualReturn float64   `json:"actualReturn" md:"实际收益"`
@@ -179,8 +185,8 @@ func (PredictionHypothesisDaily) TableName() string {
 // StockFeature 预计算的股票特征，每天收盘后更新
 type StockFeature struct {
 	ID             uint      `json:"id" gorm:"primarykey" md:"-"`
-	StockCode      string    `json:"stockCode" gorm:"size:20;index:idx_stock_feature_date_code;index:idx_stock_feature_code_date_version" md:"股票代码"`
-	Date           string    `json:"date" gorm:"size:10;index:idx_stock_feature_date_code;index:idx_stock_feature_code_date_version" md:"日期"`
+	StockCode      string    `json:"stockCode" gorm:"size:20;index:idx_stock_feature_date_code;index:idx_stock_feature_code_date_version;uniqueIndex:uidx_stock_feature_code_date_version" md:"股票代码"`
+	Date           string    `json:"date" gorm:"size:10;index:idx_stock_feature_date_code;index:idx_stock_feature_code_date_version;uniqueIndex:uidx_stock_feature_code_date_version" md:"日期"`
 	Close          float64   `json:"close" md:"收盘价"`
 	Open           float64   `json:"open" md:"开盘价"`
 	High           float64   `json:"high" md:"最高价"`
@@ -206,7 +212,7 @@ type StockFeature struct {
 	ChangeRate20   float64   `json:"changeRate20" md:"20日涨跌幅"`
 	DataAsOf       time.Time `json:"dataAsOf" md:"数据截至"`
 	Source         string    `json:"source" gorm:"size:50" md:"数据源"`
-	FeatureVersion string    `json:"featureVersion" gorm:"size:50;index:idx_stock_feature_code_date_version" md:"特征版本"`
+	FeatureVersion string    `json:"featureVersion" gorm:"size:50;index:idx_stock_feature_code_date_version;uniqueIndex:uidx_stock_feature_code_date_version" md:"特征版本"`
 	Adjusted       bool      `json:"adjusted" md:"是否复权"`
 }
 
@@ -247,6 +253,9 @@ type PredictionTrade struct {
 	SellDate        string    `json:"sellDate" gorm:"size:10"`
 	BuyPrice        float64   `json:"buyPrice"`
 	SellPrice       float64   `json:"sellPrice"`
+	Quantity        float64   `json:"quantity"`
+	GrossBuyAmount  float64   `json:"grossBuyAmount"`
+	GrossSellAmount float64   `json:"grossSellAmount"`
 	Fee             float64   `json:"fee"`
 	Slippage        float64   `json:"slippage"`
 	ReturnRate      float64   `json:"returnRate"`

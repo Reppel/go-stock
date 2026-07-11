@@ -6,7 +6,8 @@ import (
 )
 
 const (
-	CurrentStrategyVersion  = "strategy_v2"
+	CurrentStrategyVersion  = "strategy_v3"
+	CurrentFeatureVersion   = "daily_v2_qfq"
 	MinPoolStrategySamples  = 30
 	MinStockStrategySamples = 10
 )
@@ -75,6 +76,8 @@ type PortfolioPosition struct {
 	EntryPrice      float64   `json:"entryPrice"`
 	AvgCost         float64   `json:"avgCost"`
 	CostAmount      float64   `json:"costAmount"`
+	EntryFee        float64   `json:"entryFee"`
+	EntrySlippage   float64   `json:"entrySlippage"`
 	Quantity        float64   `json:"quantity"`
 	MaxPrice        float64   `json:"maxPrice"`
 	MinPrice        float64   `json:"minPrice"`
@@ -101,6 +104,7 @@ type RiskAssessment struct {
 	ShouldExit      bool     `json:"shouldExit"`
 	ExitReason      string   `json:"exitReason"`
 	ExitPrice       float64  `json:"exitPrice"`
+	ExitAtNextOpen  bool     `json:"exitAtNextOpen"`
 	DefensePrice    float64  `json:"defensePrice"`
 	StopLossPrice   float64  `json:"stopLossPrice"`
 	TakeProfitPrice float64  `json:"takeProfitPrice"`
@@ -171,11 +175,13 @@ type CapitalFlowSignal struct {
 }
 
 type DecisionContext struct {
-	Session    *models.PredictionSession
-	Hypotheses []models.PredictionHypothesis
-	Feature    models.StockFeature
-	Quote      quoteSnapshot
-	Holding    holdingSnapshot
+	Session         *models.PredictionSession
+	Hypotheses      []models.PredictionHypothesis
+	Feature         models.StockFeature
+	PreviousFeature *models.StockFeature
+	Quote           quoteSnapshot
+	Holding         holdingSnapshot
+	PreviousAction  string
 }
 
 type StrategySampleSummary struct {

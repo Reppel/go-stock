@@ -1,8 +1,10 @@
 package backtest
 
 import (
+	"encoding/json"
 	"go-stock/backend/db"
 	"go-stock/backend/models"
+	"sort"
 	"strings"
 	"time"
 )
@@ -58,8 +60,9 @@ func (e *CapitalFlowEngine) GetStockFlow(stockCode string, date string, f models
 		signal.DataAsOf = time.Now()
 	}
 
-	sectorNet, sectorSignal := latestSectorNet("industry", date)
-	conceptNet, conceptSignal := latestSectorNet("concept", date)
+	industry, concepts := stockIndustryAndConcepts(stockCode)
+	sectorNet, sectorSignal := latestNamedSectorNet("industry", []string{industry}, date)
+	conceptNet, conceptSignal := latestNamedSectorNet("concept", concepts, date)
 	if signal.SectorNetInflow == 0 {
 		signal.SectorNetInflow = sectorNet
 	}
@@ -202,28 +205,89 @@ func amountSignal(value float64) string {
 	}
 }
 
-func latestSectorNet(sectorType string, date string) (float64, string) {
-	var latest string
-	query := db.Dao.Model(&models.SectorFlowDaily{}).Where("sector_type = ?", sectorType)
-	if date != "" {
-		query = query.Where("trade_date <= ?", date)
+func latestNamedSectorNet(sectorType string, names []string, date string) (float64, string) {
+	filtered := make([]string, 0, len(names))
+	for _, name := range names {
+		if value := strings.TrimSpace(name); value != "" {
+			filtered = append(filtered, value)
+		}
 	}
-	query.Select("MAX(trade_date)").Scan(&latest)
-	if latest == "" {
+	if len(filtered) == 0 {
+		return 0, "unknown"
+	}
+	filtered = uniqueStrings(filtered)
+	latestQuery := db.Dao.Model(&models.SectorFlowDaily{}).
+		Where("sector_type = ? AND sector_name IN ?", sectorType, filtered)
+	if date != "" {
+		latestQuery = latestQuery.Where("trade_date <= ?", date)
+	}
+	var latestDate string
+	if latestQuery.Select("COALESCE(MAX(trade_date), '')").Scan(&latestDate).Error != nil || latestDate == "" {
 		return 0, "unknown"
 	}
 	var rows []models.SectorFlowDaily
-	db.Dao.Where("sector_type = ? AND trade_date = ?", sectorType, latest).Order("rank asc").Limit(50).Find(&rows)
-	sum := 0.0
+	if db.Dao.Where("sector_type = ? AND sector_name IN ? AND trade_date = ?", sectorType, filtered, latestDate).
+		Find(&rows).Error != nil || len(rows) == 0 {
+		return 0, "unknown"
+	}
+	values := make([]float64, 0, len(rows))
 	for _, row := range rows {
-		sum += row.NetInflow
+		values = append(values, row.NetInflow)
+	}
+	sort.Float64s(values)
+	netInflow := values[len(values)/2]
+	if len(values)%2 == 0 {
+		netInflow = (values[len(values)/2-1] + values[len(values)/2]) / 2
 	}
 	switch {
-	case sum > 0:
-		return sum, "inflow"
-	case sum < 0:
-		return sum, "outflow"
+	case netInflow > 0:
+		return netInflow, "inflow"
+	case netInflow < 0:
+		return netInflow, "outflow"
 	default:
 		return 0, "neutral"
 	}
+}
+
+func stockIndustryAndConcepts(stockCode string) (string, []string) {
+	code := strings.ToUpper(strings.TrimSpace(stockCode))
+	numeric := code
+	if strings.HasPrefix(strings.ToLower(numeric), "sh") || strings.HasPrefix(strings.ToLower(numeric), "sz") || strings.HasPrefix(strings.ToLower(numeric), "bj") {
+		numeric = numeric[2:]
+	}
+	if dot := strings.Index(numeric, "."); dot >= 0 {
+		numeric = numeric[:dot]
+	}
+	var stock models.AllStockInfo
+	err := db.Dao.Where("sec_uri_tycode = ? OR secucode IN ?", numeric, stockCodeVariants(stockCode)).First(&stock).Error
+	if err != nil {
+		return "", nil
+	}
+	return strings.TrimSpace(stock.INDUSTRY), parseStockConcepts(stock.CONCEPT)
+}
+
+func parseStockConcepts(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var jsonConcepts []string
+	if strings.HasPrefix(raw, "[") && json.Unmarshal([]byte(raw), &jsonConcepts) == nil {
+		concepts := make([]string, 0, len(jsonConcepts))
+		for _, concept := range jsonConcepts {
+			if concept = strings.TrimSpace(concept); concept != "" {
+				concepts = append(concepts, concept)
+			}
+		}
+		return uniqueStrings(concepts)
+	}
+
+	conceptRaw := strings.NewReplacer("，", ",", "、", ",", ";", ",", "；", ",").Replace(raw)
+	concepts := make([]string, 0)
+	for _, concept := range strings.Split(conceptRaw, ",") {
+		if concept = strings.Trim(strings.TrimSpace(concept), "[]\""); concept != "" {
+			concepts = append(concepts, concept)
+		}
+	}
+	return uniqueStrings(concepts)
 }

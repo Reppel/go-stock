@@ -46,14 +46,14 @@ func (s *FeatureSyncService) GetFeatureCoverageForScopeByDates(stockScope, start
 		coverage.ExcludedReasons = append(coverage.ExcludedReasons, "股票池为空")
 		return coverage
 	}
-	tradingDays := observedTradingDays(startDate, endDate)
+	tradingDays := observedTradingDays(startDate, endDate, CurrentFeatureVersion, DefaultBacktestConfig().BenchmarkCode)
 	coverage.ExpectedTradeDays = len(tradingDays)
 	if coverage.ExpectedTradeDays == 0 {
 		coverage.Message = "回测区间内暂无可用交易日特征数据，请先同步特征"
 		return coverage
 	}
 
-	query := db.Dao.Model(&models.StockFeature{}).Where("date >= ? AND date <= ?", startDate, endDate)
+	query := db.Dao.Model(&models.StockFeature{}).Where("date >= ? AND date <= ? AND feature_version = ?", startDate, endDate, CurrentFeatureVersion)
 	if !isAllStockScope(stockScope) {
 		query = query.Where("stock_code IN ?", universe)
 	}
@@ -62,7 +62,7 @@ func (s *FeatureSyncService) GetFeatureCoverageForScopeByDates(stockScope, start
 	query.Distinct("stock_code").Count(&coveredStocks)
 	coverage.CoveredStockCount = int(coveredStocks)
 
-	query = db.Dao.Model(&models.StockFeature{}).Where("date >= ? AND date <= ?", startDate, endDate)
+	query = db.Dao.Model(&models.StockFeature{}).Where("date >= ? AND date <= ? AND feature_version = ?", startDate, endDate, CurrentFeatureVersion)
 	if !isAllStockScope(stockScope) {
 		query = query.Where("stock_code IN ?", universe)
 	}
@@ -71,8 +71,8 @@ func (s *FeatureSyncService) GetFeatureCoverageForScopeByDates(stockScope, start
 	coverage.CoveredTradeDays = int(coveredDays)
 
 	coreQuery := db.Dao.Model(&models.StockFeature{}).
-		Where("date >= ? AND date <= ?", startDate, endDate).
-		Where("open > 0 AND close > 0 AND high > 0 AND low > 0 AND volume > 0 AND ma5 > 0 AND ma20 > 0")
+		Where("date >= ? AND date <= ? AND feature_version = ?", startDate, endDate, CurrentFeatureVersion).
+		Where("open > 0 AND close > 0 AND high > 0 AND low > 0 AND volume > 0 AND ma5 > 0 AND ma20 > 0 AND adjusted = ?", true)
 	if !isAllStockScope(stockScope) {
 		coreQuery = coreQuery.Where("stock_code IN ?", universe)
 	}
@@ -105,10 +105,18 @@ func (s *FeatureSyncService) GetFeatureCoverageForScopeByDates(stockScope, start
 	return coverage
 }
 
-func observedTradingDays(startDate, endDate string) []string {
+func observedTradingDays(startDate, endDate, featureVersion, benchmarkCode string) []string {
 	var days []string
 	db.Dao.Model(&models.StockFeature{}).
-		Where("date >= ? AND date <= ?", startDate, endDate).
+		Where("stock_code IN ? AND date >= ? AND date <= ? AND feature_version = ?", stockCodeVariants(benchmarkCode), startDate, endDate, featureVersion).
+		Distinct("date").
+		Order("date asc").
+		Pluck("date", &days)
+	if len(days) > 0 {
+		return days
+	}
+	db.Dao.Model(&models.StockFeature{}).
+		Where("date >= ? AND date <= ? AND feature_version = ?", startDate, endDate, featureVersion).
 		Distinct("date").
 		Order("date asc").
 		Pluck("date", &days)
@@ -122,7 +130,7 @@ func (s *FeatureSyncService) GetFeatureFreshness(stockScope string) map[string]a
 	if stockScope == "" {
 		stockScope = "全部A股"
 	}
-	query := db.Dao.Model(&models.StockFeature{})
+	query := db.Dao.Model(&models.StockFeature{}).Where("feature_version = ?", CurrentFeatureVersion)
 	universe := NewStockPoolService().GetStockPool(stockScope)
 	if len(universe) == 0 {
 		return map[string]any{"ready": false, "message": "股票池为空", "stockScope": stockScope}

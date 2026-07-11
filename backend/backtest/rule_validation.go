@@ -116,8 +116,17 @@ func NormalizeHypothesis(h Hypothesis) Hypothesis {
 	if h.TimeHorizon <= 0 {
 		h.TimeHorizon = 5
 	}
+	if h.TimeHorizon > 30 {
+		h.TimeHorizon = 30
+	}
 	if h.TargetReturn <= 0 {
 		h.TargetReturn = 0.05
+	}
+	if h.TargetReturn < 0.01 {
+		h.TargetReturn = 0.01
+	}
+	if h.TargetReturn > 0.20 {
+		h.TargetReturn = 0.20
 	}
 	if h.Rule.StopLoss <= 0 {
 		h.Rule.StopLoss = 0.07
@@ -159,7 +168,10 @@ func validateRule(rule Rule) []ValidationError {
 	for _, d := range GetIndicatorRegistry() {
 		allowed[d.Name] = true
 	}
-	allowedOps := map[string]bool{">": true, ">=": true, "<": true, "<=": true, "==": true, "!=": true}
+	allowedOps := map[string]bool{
+		">": true, ">=": true, "<": true, "<=": true, "==": true, "!=": true,
+		"cross_up": true, "cross_down": true, "crosses_above": true, "crosses_below": true,
+	}
 
 	if len(rule.EntryConditions) == 0 {
 		errs = append(errs, ValidationError{Field: "entryConditions", Message: "至少需要一个入场条件"})

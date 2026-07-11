@@ -68,11 +68,11 @@ func LoadHypothesisTemplates() []HypothesisTemplate {
 			Description: "当短期均线上穿长期均线，且成交量放大时，未来 {{timeHorizon}} 个交易日上涨概率较高。",
 			BaseRule: Rule{
 				EntryConditions: []Condition{
-					{Indicator: "MA5", Operator: ">", Ref: "MA20"},
+					{Indicator: "MA5", Operator: "cross_up", Ref: "MA20"},
 					{Indicator: "VolumeRatio", Operator: ">", Value: 1.2},
 				},
 				ExitConditions: []Condition{
-					{Indicator: "MA5", Operator: "<", Ref: "MA20"},
+					{Indicator: "MA5", Operator: "cross_down", Ref: "MA20"},
 				},
 				StopLoss:    0.07,
 				StopGain:    0.15,
@@ -134,11 +134,11 @@ func LoadHypothesisTemplates() []HypothesisTemplate {
 			Description: "MACD 指标出现金叉且零轴上方时，短期上涨概率较高。",
 			BaseRule: Rule{
 				EntryConditions: []Condition{
-					{Indicator: "MACD", Operator: ">", Value: 0},
+					{Indicator: "MACD", Operator: "cross_up", Value: 0},
 					{Indicator: "Close", Operator: ">", Ref: "MA20"},
 				},
 				ExitConditions: []Condition{
-					{Indicator: "Close", Operator: "<", Ref: "MA10"},
+					{Indicator: "MACD", Operator: "cross_down", Value: 0},
 				},
 				StopLoss:    0.06,
 				StopGain:    0.12,
@@ -381,7 +381,7 @@ func (g *AIGenerator) buildLLMPrompt(scene string, stockScope string, ctx Market
 【可用技术指标】
 MA5, MA10, MA20, MA60, MACD, RSI6, RSI12, KDJ_K, BOLLUpper, BOLLMid, BOLLLower, VolumeRatio, ATR, ChangeRate5, ChangeRate20, Close, Open, High, Low, Volume
 
-【条件运算符】>, >=, <, <=, ==, !=
+【条件运算符】>, >=, <, <=, ==, !=, cross_up, cross_down
 
 【参考策略模板】
 %s
@@ -407,7 +407,8 @@ MA5, MA10, MA20, MA60, MACD, RSI6, RSI12, KDJ_K, BOLLUpper, BOLLMid, BOLLLower, 
 1. 只返回 JSON 数组，不要任何解释或 markdown 代码块。
 2. 策略要适合当前投资场景。
 3. indicator 必须是可用技术指标之一。
-4. 当条件需要参考另一个指标时用 ref，用具体数值时用 value（数字）。`,
+4. 当条件需要参考另一个指标时用 ref，用具体数值时用 value（数字）。
+5. “上穿/金叉”必须使用 cross_up，“下穿/死叉”必须使用 cross_down，不能用简单的大于或小于替代。`,
 		scene, stockScope, ctx.MarketState, ctx.ShIndexReturn*100, strings.Join(examples, "\n"), scene)
 }
 

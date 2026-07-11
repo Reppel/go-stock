@@ -17,6 +17,10 @@ func NewRiskEngine(strategy *StrategyEngine) *RiskEngine {
 }
 
 func (r *RiskEngine) EvaluateBacktestExit(rule Rule, pos PortfolioPosition, f models.StockFeature, dayIndex int, timeHorizon int) RiskAssessment {
+	return r.EvaluateBacktestExitWithPrevious(rule, pos, f, nil, dayIndex, timeHorizon)
+}
+
+func (r *RiskEngine) EvaluateBacktestExitWithPrevious(rule Rule, pos PortfolioPosition, f models.StockFeature, previous *models.StockFeature, dayIndex int, timeHorizon int) RiskAssessment {
 	stopLoss := normalizePct(rule.StopLoss, 0.03, 0.15)
 	stopGain := normalizePct(rule.StopGain, 0.02, 0.30)
 	stopLossPrice := pos.EntryPrice * (1 - stopLoss)
@@ -30,11 +34,17 @@ func (r *RiskEngine) EvaluateBacktestExit(rule Rule, pos PortfolioPosition, f mo
 		StopLossPrice:   stopLossPrice,
 		TakeProfitPrice: takeProfitPrice,
 	}
+	if dayIndex <= pos.BuyDayIndex {
+		return assessment
+	}
 	if f.Low > 0 && f.Low <= stopLossPrice {
 		assessment.RiskLevel = "high"
 		assessment.ShouldExit = true
 		assessment.ExitReason = "stop_loss"
 		assessment.ExitPrice = stopLossPrice
+		if f.Open > 0 && f.Open < stopLossPrice {
+			assessment.ExitPrice = f.Open
+		}
 		assessment.Warnings = append(assessment.Warnings, "触发止损")
 		return assessment
 	}
@@ -43,14 +53,18 @@ func (r *RiskEngine) EvaluateBacktestExit(rule Rule, pos PortfolioPosition, f mo
 		assessment.ShouldExit = true
 		assessment.ExitReason = "stop_gain"
 		assessment.ExitPrice = takeProfitPrice
+		if f.Open > takeProfitPrice {
+			assessment.ExitPrice = f.Open
+		}
 		assessment.Reasons = append(assessment.Reasons, "触发止盈")
 		return assessment
 	}
-	if r.strategy.MatchConditions(rule.ExitConditions, f) {
+	if r.strategy.MatchAnyConditionWithPrevious(rule.ExitConditions, f, previous) {
 		assessment.RiskLevel = "medium"
 		assessment.ShouldExit = true
 		assessment.ExitReason = "exit_condition"
 		assessment.ExitPrice = f.Close
+		assessment.ExitAtNextOpen = true
 		assessment.Warnings = append(assessment.Warnings, "触发策略退出条件")
 		return assessment
 	}

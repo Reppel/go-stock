@@ -92,7 +92,6 @@ func (s *FeatureSyncService) SyncStockMoneyFlow(stockCode string, days int) (int
 	}
 
 	saved := 0
-	now := time.Now()
 	for i, row := range rows {
 		tradeDate := normalizeMoneyFlowDate(row.Date)
 		if tradeDate == "" {
@@ -101,7 +100,7 @@ func (s *FeatureSyncService) SyncStockMoneyFlow(stockCode string, days int) (int
 		flow := models.StockMoneyFlowDaily{
 			StockCode:          code,
 			TradeDate:          tradeDate,
-			DataAsOf:           now,
+			DataAsOf:           featureDataAsOf(tradeDate),
 			MainNetInflow1:     mainValues[i],
 			MainNetInflow5:     rollingSum(mainValues, i, 5),
 			MainNetInflow20:    rollingSum(mainValues, i, 20),
@@ -244,7 +243,7 @@ func updateFeatureFundFlow(stockCode string, tradeDate string, flow5 float64, fl
 		return
 	}
 	db.Dao.Model(&models.StockFeature{}).
-		Where("stock_code IN ? AND date = ?", stockCodeVariants(stockCode), tradeDate).
+		Where("stock_code IN ? AND date = ? AND feature_version = ?", stockCodeVariants(stockCode), tradeDate, CurrentFeatureVersion).
 		Updates(map[string]any{
 			"fund_flow5":  flow5,
 			"fund_flow20": flow20,

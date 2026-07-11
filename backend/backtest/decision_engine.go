@@ -36,7 +36,8 @@ func (e *DecisionEngine) Build(ctx DecisionContext) models.PredictionDecision {
 	quote := ctx.Quote
 	holding := ctx.Holding
 	currentPrice := f.Close
-	if quote.price > 0 {
+	quoteUsable := quoteCompatibleWithFeature(quote, f)
+	if quoteUsable && quote.price > 0 {
 		currentPrice = quote.price
 	}
 
@@ -49,7 +50,7 @@ func (e *DecisionEngine) Build(ctx DecisionContext) models.PredictionDecision {
 	}
 
 	dataAsOf := f.DataAsOf
-	if !quote.at.IsZero() {
+	if quoteUsable && !quote.at.IsZero() {
 		dataAsOf = quote.at
 	}
 	if dataAsOf.IsZero() {
@@ -63,78 +64,73 @@ func (e *DecisionEngine) Build(ctx DecisionContext) models.PredictionDecision {
 	negativeStrategyCount := 0
 	noLookaheadOK := true
 	bestTargetReturn := 0.01
-	bestRuleStopLoss := 0.03
+	bestRuleStopLoss := 0.0
 	matchedFacts := make([]matchedStrategyFact, 0, len(ctx.Hypotheses))
 	sampleSummaries := make([]StrategySampleSummary, 0, len(ctx.Hypotheses))
 	reasons := make([]string, 0, 10)
 	risks := make([]string, 0, 10)
-	stockTradeCounts := loadStockTradeCounts(ctx.Hypotheses, f.StockCode)
-	poolSampleCount := 0
-	stockSampleCount := 0
-	anySampleReady := false
+	stockTradeStats := loadStockTradeStats(ctx.Hypotheses, f.StockCode)
+	poolSampleCount, stockSampleCount := loadUniqueTradeSamples(ctx.Hypotheses, f.StockCode)
 	relevantStrategyCount := 0
 	relevantSampleReady := false
+	probabilityWeighted := 0.0
+	expectedReturnWeighted := 0.0
+	targetReturnWeighted := 0.0
+	matchedWeight := 0.0
+	dataReady := f.Adjusted && f.FeatureVersion == CurrentFeatureVersion && featureFreshForDecision(f, time.Now())
 
 	for _, h := range ctx.Hypotheses {
 		var rule Rule
 		if err := json.Unmarshal([]byte(h.RuleJSON), &rule); err != nil {
 			continue
 		}
-		entryMatched := e.strategy.MatchConditions(rule.EntryConditions, f)
-		exitMatched := e.strategy.MatchConditions(rule.ExitConditions, f)
+		entryMatched := e.strategy.MatchConditionsWithPrevious(rule.EntryConditions, f, ctx.PreviousFeature)
+		exitMatched := e.strategy.MatchAnyConditionWithPrevious(rule.ExitConditions, f, ctx.PreviousFeature)
 		monitorReady := hypothesisMonitorReady(h)
-		stockSamples := stockTradeCounts[h.ID]
+		stockStat := stockTradeStats[h.ID]
+		stockSamples := stockStat.Count
 		sampleReady := h.TradeCount >= MinPoolStrategySamples && stockSamples >= MinStockStrategySamples
-		poolSampleCount += h.TradeCount
-		stockSampleCount += stockSamples
-		if sampleReady {
-			anySampleReady = true
-		}
 		if entryMatched || exitMatched {
 			relevantStrategyCount++
-			if sampleReady {
+			if sampleReady && monitorReady {
 				relevantSampleReady = true
 			}
-		}
-		if !h.NoLookaheadPassed {
-			noLookaheadOK = false
-		}
-		if h.AvgReturn < 0 {
-			negativeStrategyCount++
-		}
-		if h.TargetReturn > bestTargetReturn && h.AvgReturn > 0 {
-			bestTargetReturn = h.TargetReturn
-		}
-		if rule.StopLoss > 0 {
-			bestRuleStopLoss = rule.StopLoss
+			if !h.NoLookaheadPassed {
+				noLookaheadOK = false
+			}
+			weight := math.Sqrt(float64(stockSamples) + 1)
+			posteriorProbability := (float64(stockStat.Wins) + 2) / (float64(stockSamples) + 4)
+			if stockSamples == 0 {
+				poolWeight := math.Min(float64(h.TradeCount), 30)
+				posteriorProbability = (h.WinRate*poolWeight + 2) / (poolWeight + 4)
+			}
+			shrunkReturn := (stockStat.AvgReturn*float64(stockSamples) + h.OutSampleAvgReturn*5) / (float64(stockSamples) + 5)
+			probabilityWeighted += posteriorProbability * weight
+			expectedReturnWeighted += shrunkReturn * weight
+			targetReturnWeighted += h.TargetReturn * weight
+			matchedWeight += weight
+			if shrunkReturn < 0 {
+				negativeStrategyCount++
+			}
+			if rule.StopLoss > 0 && (bestRuleStopLoss == 0 || rule.StopLoss < bestRuleStopLoss) {
+				bestRuleStopLoss = rule.StopLoss
+			}
 		}
 
 		if entryMatched {
 			entryMatchedCount++
-			score += 6
-			if h.AvgReturn > 0 {
-				score += math.Min(h.AvgReturn*100, 10)
+			if sampleReady && monitorReady {
 				positiveMatchedCount++
-			} else {
-				score -= 6
-			}
-			if h.WinRate >= 0.5 {
-				score += 6
-			} else {
-				score -= 4
 			}
 			if !sampleReady {
-				score -= 4
+				score -= 3
 			}
 			reasons = append(reasons, fmt.Sprintf("命中策略「%s」入场条件", h.Name))
 		}
 		if exitMatched {
 			exitMatchedCount++
-			score -= 10
+			score -= 12
 			risks = append(risks, fmt.Sprintf("策略「%s」触发退出条件", h.Name))
-		}
-		if h.AvgReturn < 0 {
-			score -= 3
 		}
 		matchedFacts = append(matchedFacts, matchedStrategyFact{
 			ID:              h.ID,
@@ -160,10 +156,15 @@ func (e *DecisionEngine) Build(ctx DecisionContext) models.PredictionDecision {
 			SampleReady:  sampleReady,
 		})
 	}
-	sampleWarning := !anySampleReady
-	if relevantStrategyCount > 0 {
-		sampleWarning = !relevantSampleReady
+	probability := 0.5
+	expectedReturn := 0.0
+	if matchedWeight > 0 {
+		probability = probabilityWeighted / matchedWeight
+		expectedReturn = expectedReturnWeighted / matchedWeight
+		bestTargetReturn = targetReturnWeighted / matchedWeight
+		score += (probability-0.5)*60 + clamp(expectedReturn*100, -10, 10)
 	}
+	sampleWarning := relevantStrategyCount == 0 || !relevantSampleReady || !dataReady
 
 	if f.MA20 > 0 && f.Close < f.MA20 && f.MACD < 0 {
 		score -= 8
@@ -178,7 +179,16 @@ func (e *DecisionEngine) Build(ctx DecisionContext) models.PredictionDecision {
 		reasons = append(reasons, "量比高于1.2，短线关注度提升")
 	}
 	if !f.Adjusted {
-		risks = append(risks, "特征未复权，ETF分拆或除权可能放大均线误差")
+		risks = append(risks, "特征未复权，已阻止交易建议")
+	}
+	if f.FeatureVersion != CurrentFeatureVersion {
+		risks = append(risks, "特征版本过旧，已阻止交易建议")
+	}
+	if !featureFreshForDecision(f, time.Now()) {
+		risks = append(risks, "特征数据已过期，历史会话不生成当前交易动作")
+	}
+	if quote.price > 0 && !quoteUsable {
+		risks = append(risks, "实时行情与特征日期不一致，本次使用特征收盘价")
 	}
 	if f.MA20 > 0 && math.Abs(f.Close/f.MA20-1) > 0.25 {
 		risks = append(risks, "价格与MA20偏离过大，请复核复权口径")
@@ -191,8 +201,11 @@ func (e *DecisionEngine) Build(ctx DecisionContext) models.PredictionDecision {
 	dataStatus := loadDecisionDataStatus(ctx.Session, f)
 	risks = append(risks, dataStatus.Warnings...)
 
-	if sampleWarning {
-		risks = append(risks, fmt.Sprintf("当前股票有效回测样本不足：单策略至少需要股票池%d笔且单股%d笔", MinPoolStrategySamples, MinStockStrategySamples))
+	if relevantStrategyCount == 0 || !relevantSampleReady {
+		risks = append(risks, fmt.Sprintf("当前股票没有通过正式质量门槛且样本充足的命中策略：单策略至少需要股票池%d笔且单股%d笔", MinPoolStrategySamples, MinStockStrategySamples))
+	}
+	if !dataReady {
+		score = math.Min(score, 40)
 	}
 	if !noLookaheadOK {
 		risks = append(risks, "存在未通过未来函数检查的策略，不允许作为正式依据")
@@ -227,6 +240,18 @@ func (e *DecisionEngine) Build(ctx DecisionContext) models.PredictionDecision {
 		action = "SELL"
 		quantityPercent = 100
 	}
+	action, quantityPercent = stabilizeAction(ctx.PreviousAction, action, quantityPercent, score, risk.ShouldExit)
+	if !dataReady {
+		if hasPosition {
+			action = "HOLD"
+		} else {
+			action = "WATCH"
+		}
+		quantityPercent = 0
+	}
+	if action == "BUY" || action == "ADD" {
+		quantityPercent = math.Min(quantityPercent, riskBudgetPositionPercent(bestRuleStopLoss, sampleWarning))
+	}
 	sizing := e.sizer.Size(action, quantityPercent, currentPrice, holdingVolume, holding.marketValue)
 	if sizing.AccountWarning != "" {
 		risks = append(risks, sizing.AccountWarning)
@@ -236,8 +261,8 @@ func (e *DecisionEngine) Build(ctx DecisionContext) models.PredictionDecision {
 		positionAdvice = fmt.Sprintf("%s，约%d股/份，参考金额%.2f", positionAdvice, sizing.SuggestedQuantity, sizing.SuggestedAmount)
 	}
 
-	quality := decisionQualityRating(ctx.Hypotheses, stockSampleCount, sampleWarning, noLookaheadOK)
-	confidence := decisionConfidence(score, sampleWarning || !noLookaheadOK)
+	quality := decisionQualityRating(positiveMatchedCount, stockSampleCount, sampleWarning, noLookaheadOK, dataReady)
+	confidence := decisionConfidence(probability, stockSampleCount, sampleWarning || !noLookaheadOK)
 
 	matchedJSON, _ := json.Marshal(matchedFacts)
 	reasonsJSON, _ := json.Marshal(uniqueStrings(reasons))
@@ -262,6 +287,8 @@ func (e *DecisionEngine) Build(ctx DecisionContext) models.PredictionDecision {
 		QualityRating:         quality,
 		RiskLevel:             risk.RiskLevel,
 		Score:                 score,
+		Probability:           probability,
+		ExpectedReturn:        expectedReturn,
 		CurrentPrice:          currentPrice,
 		ReferencePrice:        f.Close,
 		CostPrice:             costPrice,
@@ -294,20 +321,70 @@ func (e *DecisionEngine) Build(ctx DecisionContext) models.PredictionDecision {
 	return decision
 }
 
-func decisionQualityRating(hypotheses []models.PredictionHypothesis, stockSampleCount int, sampleWarning bool, noLookaheadOK bool) string {
-	if !noLookaheadOK {
+func quoteCompatibleWithFeature(quote quoteSnapshot, feature models.StockFeature) bool {
+	if quote.price <= 0 {
+		return false
+	}
+	quoteDate := strings.TrimSpace(quote.date)
+	if quoteDate == "" && !quote.at.IsZero() {
+		quoteDate = quote.at.Format("2006-01-02")
+	}
+	featureDate, featureErr := time.Parse("2006-01-02", feature.Date)
+	quoteDay, quoteErr := time.Parse("2006-01-02", quoteDate)
+	if featureErr != nil || quoteErr != nil || quoteDay.Before(featureDate) {
+		return false
+	}
+	return quoteDay.Sub(featureDate) <= 4*24*time.Hour
+}
+
+func featureFreshForDecision(feature models.StockFeature, now time.Time) bool {
+	featureDate, err := time.Parse("2006-01-02", feature.Date)
+	if err != nil {
+		return false
+	}
+	nowDate, err := time.Parse("2006-01-02", now.Format("2006-01-02"))
+	if err != nil || nowDate.Before(featureDate) {
+		return false
+	}
+	return nowDate.Sub(featureDate) <= 4*24*time.Hour
+}
+
+func stabilizeAction(previousAction, action string, quantityPercent, score float64, emergencyExit bool) (string, float64) {
+	previousAction = strings.ToUpper(strings.TrimSpace(previousAction))
+	if previousAction == "" || emergencyExit {
+		return action, quantityPercent
+	}
+	if (previousAction == "SELL" || previousAction == "AVOID") && (action == "BUY" || action == "ADD") && score < 82 {
+		return "WATCH", 0
+	}
+	if previousAction == "HOLD" && action == "ADD" && score < 82 {
+		return "HOLD", 0
+	}
+	if (previousAction == "BUY" || previousAction == "ADD") && action == "AVOID" && score >= 45 {
+		return "WATCH", 0
+	}
+	return action, quantityPercent
+}
+
+func riskBudgetPositionPercent(stopLossRate float64, sampleWarning bool) float64 {
+	if stopLossRate <= 0 {
+		stopLossRate = 0.05
+	}
+	riskBudget := 0.01
+	if sampleWarning {
+		riskBudget = 0.005
+	}
+	return clamp(riskBudget/stopLossRate*100, 5, 20)
+}
+
+func decisionQualityRating(positiveMatchedCount int, stockSampleCount int, sampleWarning bool, noLookaheadOK bool, dataReady bool) string {
+	if !noLookaheadOK || !dataReady {
 		return "blocked"
 	}
-	if len(hypotheses) == 0 || sampleWarning {
+	if positiveMatchedCount == 0 || sampleWarning {
 		return "observe"
 	}
-	positive := 0
-	for _, h := range hypotheses {
-		if h.AvgReturn > 0 && h.WinRate >= 0.5 && h.MaxDrawdown <= 0.20 {
-			positive++
-		}
-	}
-	if stockSampleCount >= 30 && positive > 0 {
+	if stockSampleCount >= 30 {
 		return "reference"
 	}
 	if stockSampleCount >= MinStockStrategySamples {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"go-stock/backend/db"
 	"go-stock/backend/models"
+	"strings"
 
 	"gorm.io/gorm"
 )
@@ -34,6 +35,9 @@ func (s *PredictionService) RecalculateSession(sessionID uint) (*models.Predicti
 	}
 
 	universe := NewStockPoolService().GetStockPool(session.StockScope)
+	if strings.TrimSpace(session.UniverseJSON) != "" {
+		_ = json.Unmarshal([]byte(session.UniverseJSON), &universe)
+	}
 	if len(universe) == 0 {
 		return nil, nil, fmt.Errorf("股票池为空，无法重新回测")
 	}
@@ -70,6 +74,8 @@ func (s *PredictionService) RecalculateSession(sessionID uint) (*models.Predicti
 		hypothesis.ProfitLossRatio = result.ProfitLossRatio
 		hypothesis.OutSampleAvgReturn = result.OutSampleAvgReturn
 		hypothesis.OutSampleMaxDrawdown = result.OutSampleMaxDrawdown
+		hypothesis.OutSampleTradeCount = result.OutSampleTradeCount
+		hypothesis.BenchmarkAvailable = result.BenchmarkAvailable
 		hypothesis.DataCoverage = result.DataCoverage
 		hypothesis.NoLookaheadPassed = result.NoLookaheadPassed
 		hypothesis.BacktestConfigJSON = string(payload)
@@ -103,9 +109,11 @@ func (s *PredictionService) RecalculateSession(sessionID uint) (*models.Predicti
 			}
 			for _, trade := range item.result.Trades {
 				row := models.PredictionTrade{
-					HypothesisID: item.hypothesis.ID, StockCode: trade.StockCode, StockName: trade.StockName,
+					HypothesisID: item.hypothesis.ID, StockCode: trade.StockCode, StockName: stockNameOrCode(trade.StockCode, trade.StockName),
 					SignalDate: trade.SignalDate, BuyDate: trade.BuyDate, SellDate: trade.SellDate,
-					BuyPrice: trade.BuyPrice, SellPrice: trade.SellPrice, Fee: trade.Fee, Slippage: trade.Slippage,
+					BuyPrice: trade.BuyPrice, SellPrice: trade.SellPrice, Quantity: trade.Quantity,
+					GrossBuyAmount: trade.GrossBuyAmount, GrossSellAmount: trade.GrossSellAmount,
+					Fee: trade.Fee, Slippage: trade.Slippage,
 					ReturnRate: trade.ReturnRate, MaxReturn: trade.MaxReturn, MaxDrawdown: trade.MaxDrawdown,
 					HoldDays: trade.HoldDays, EntryReasonJSON: trade.EntryReasonJSON, ExitReason: trade.ExitReason,
 					FeatureVersion: trade.FeatureVersion, DataAsOf: trade.DataAsOf,
@@ -136,11 +144,9 @@ func storedBacktestConfig(raw string) BacktestConfig {
 	if json.Unmarshal([]byte(raw), &payload) == nil && payload.Config.EntryMode != "" {
 		config = payload.Config
 	}
-	if config.FeatureVersion == "" {
-		config.FeatureVersion = DefaultBacktestConfig().FeatureVersion
-	}
+	config.FeatureVersion = CurrentFeatureVersion
 	if config.BenchmarkCode == "" {
 		config.BenchmarkCode = DefaultBacktestConfig().BenchmarkCode
 	}
-	return config
+	return normalizeBacktestConfig(config)
 }

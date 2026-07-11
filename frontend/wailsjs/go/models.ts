@@ -2940,6 +2940,8 @@ export namespace models {
 	    qualityRating: string;
 	    riskLevel: string;
 	    score: number;
+	    probability: number;
+	    expectedReturn: number;
 	    currentPrice: number;
 	    referencePrice: number;
 	    costPrice: number;
@@ -2991,6 +2993,8 @@ export namespace models {
 	        this.qualityRating = source["qualityRating"];
 	        this.riskLevel = source["riskLevel"];
 	        this.score = source["score"];
+	        this.probability = source["probability"];
+	        this.expectedReturn = source["expectedReturn"];
 	        this.currentPrice = source["currentPrice"];
 	        this.referencePrice = source["referencePrice"];
 	        this.costPrice = source["costPrice"];
@@ -3100,6 +3104,8 @@ export namespace models {
 	    profitLossRatio: number;
 	    outSampleAvgReturn: number;
 	    outSampleMaxDrawdown: number;
+	    outSampleTradeCount: number;
+	    benchmarkAvailable: boolean;
 	    dataCoverage: number;
 	    noLookaheadPassed: boolean;
 	    backtestConfigJson: string;
@@ -3137,6 +3143,8 @@ export namespace models {
 	        this.profitLossRatio = source["profitLossRatio"];
 	        this.outSampleAvgReturn = source["outSampleAvgReturn"];
 	        this.outSampleMaxDrawdown = source["outSampleMaxDrawdown"];
+	        this.outSampleTradeCount = source["outSampleTradeCount"];
+	        this.benchmarkAvailable = source["benchmarkAvailable"];
 	        this.dataCoverage = source["dataCoverage"];
 	        this.noLookaheadPassed = source["noLookaheadPassed"];
 	        this.backtestConfigJson = source["backtestConfigJson"];
@@ -3194,6 +3202,7 @@ export namespace models {
 	    id: number;
 	    scene: string;
 	    stockScope: string;
+	    universeJson: string;
 	    startDate: string;
 	    endDate: string;
 	    status: string;
@@ -3210,6 +3219,7 @@ export namespace models {
 	        this.id = source["id"];
 	        this.scene = source["scene"];
 	        this.stockScope = source["stockScope"];
+	        this.universeJson = source["universeJson"];
 	        this.startDate = source["startDate"];
 	        this.endDate = source["endDate"];
 	        this.status = source["status"];
@@ -3242,6 +3252,7 @@ export namespace models {
 	    stockName: string;
 	    signalDate: string;
 	    entryPrice: number;
+	    entryDate: string;
 	    targetDate: string;
 	    targetReturn: number;
 	    actualReturn: number;
@@ -3269,6 +3280,7 @@ export namespace models {
 	        this.stockName = source["stockName"];
 	        this.signalDate = source["signalDate"];
 	        this.entryPrice = source["entryPrice"];
+	        this.entryDate = source["entryDate"];
 	        this.targetDate = source["targetDate"];
 	        this.targetReturn = source["targetReturn"];
 	        this.actualReturn = source["actualReturn"];
@@ -3311,6 +3323,9 @@ export namespace models {
 	    sellDate: string;
 	    buyPrice: number;
 	    sellPrice: number;
+	    quantity: number;
+	    grossBuyAmount: number;
+	    grossSellAmount: number;
 	    fee: number;
 	    slippage: number;
 	    returnRate: number;
@@ -3340,6 +3355,9 @@ export namespace models {
 	        this.sellDate = source["sellDate"];
 	        this.buyPrice = source["buyPrice"];
 	        this.sellPrice = source["sellPrice"];
+	        this.quantity = source["quantity"];
+	        this.grossBuyAmount = source["grossBuyAmount"];
+	        this.grossSellAmount = source["grossSellAmount"];
 	        this.fee = source["fee"];
 	        this.slippage = source["slippage"];
 	        this.returnRate = source["returnRate"];

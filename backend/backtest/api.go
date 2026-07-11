@@ -7,6 +7,8 @@ import (
 	"go-stock/backend/db"
 	"go-stock/backend/logger"
 	"go-stock/backend/models"
+	"gorm.io/gorm"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -124,14 +126,19 @@ func (s *PredictionService) CreateSession(
 		db.Dao.Save(session)
 		return nil, nil, fmt.Errorf("股票池为空，请检查自选股或股票代码是否有效")
 	}
+	universe = uniqueStrings(universe)
+	universeJSON, _ := json.Marshal(universe)
+	session.UniverseJSON = string(universeJSON)
+	db.Dao.Save(session)
 	queryUniverse := universe
 	if isAllStockScope(stockScope) {
 		queryUniverse = nil
 	}
 
-	// 检查当前股票池在回测区间内是否已有特征数据
+	// 检查当前股票池在回测区间内是否已有当前版本的完整前复权特征。
 	var featureCount int64
-	featureQuery := db.Dao.Model(&models.StockFeature{}).Where("date >= ? AND date <= ?", startDate, endDate)
+	featureQuery := db.Dao.Model(&models.StockFeature{}).
+		Where("date >= ? AND date <= ? AND feature_version = ? AND adjusted = ?", startDate, endDate, CurrentFeatureVersion, true)
 	if !isAllStockScope(stockScope) {
 		featureQuery = featureQuery.Where("stock_code IN ?", universe)
 	}
@@ -141,11 +148,25 @@ func (s *PredictionService) CreateSession(
 		db.Dao.Save(session)
 		return nil, nil, fmt.Errorf("当前股票池在回测区间内没有特征数据，请先点击「同步特征数据」")
 	}
+	coverage := NewFeatureSyncService().GetFeatureCoverageForScopeByDates(stockScope, startDate, endDate)
+	if !coverage.Ready {
+		session.Status = "failed"
+		session.ErrorMsg = coverage.Message
+		db.Dao.Save(session)
+		return nil, nil, fmt.Errorf("%s，请按当前回测区间重新同步特征数据", coverage.Message)
+	}
 
 	// 生成假设
+	benchmarkReturn, benchmarkReady := s.validator.calculateBenchmarkReturn(DefaultBacktestConfig().BenchmarkCode, startDate, endDate, CurrentFeatureVersion)
+	marketState := "震荡市"
+	if benchmarkReady && benchmarkReturn >= 0.05 {
+		marketState = "上涨趋势"
+	} else if benchmarkReady && benchmarkReturn <= -0.05 {
+		marketState = "下跌趋势"
+	}
 	ctx := MarketContext{
-		MarketState:   "震荡市",
-		ShIndexReturn: 0,
+		MarketState:   marketState,
+		ShIndexReturn: benchmarkReturn,
 	}
 	hypotheses, err := s.aiGenerator.GenerateWithAI(scene, stockScope, ctx, aiConfigId)
 	if err != nil {
@@ -213,6 +234,8 @@ func (s *PredictionService) CreateSession(
 			ProfitLossRatio:      result.ProfitLossRatio,
 			OutSampleAvgReturn:   result.OutSampleAvgReturn,
 			OutSampleMaxDrawdown: result.OutSampleMaxDrawdown,
+			OutSampleTradeCount:  result.OutSampleTradeCount,
+			BenchmarkAvailable:   result.BenchmarkAvailable,
 			DataCoverage:         result.DataCoverage,
 			NoLookaheadPassed:    result.NoLookaheadPassed,
 			BacktestConfigJSON:   string(backtestConfigJSON),
@@ -244,12 +267,15 @@ func (s *PredictionService) CreateSession(
 			trade := models.PredictionTrade{
 				HypothesisID:    ph.ID,
 				StockCode:       t.StockCode,
-				StockName:       t.StockName,
+				StockName:       stockNameOrCode(t.StockCode, t.StockName),
 				SignalDate:      t.SignalDate,
 				BuyDate:         t.BuyDate,
 				SellDate:        t.SellDate,
 				BuyPrice:        t.BuyPrice,
 				SellPrice:       t.SellPrice,
+				Quantity:        t.Quantity,
+				GrossBuyAmount:  t.GrossBuyAmount,
+				GrossSellAmount: t.GrossSellAmount,
 				Fee:             t.Fee,
 				Slippage:        t.Slippage,
 				ReturnRate:      t.ReturnRate,
@@ -288,7 +314,9 @@ func backtestPayload(config BacktestConfig, result *ValidationResult) map[string
 	switch {
 	case !result.NoLookaheadPassed:
 		quality = "blocked"
-	case result.TradeCount >= 30 && result.AvgReturn > 0 && result.MaxDrawdown <= 0.20 && result.OutSampleAvgReturn >= -0.02:
+	case result.TradeCount >= MinPoolStrategySamples && result.OutSampleTradeCount >= 15 &&
+		result.AvgReturn > 0 && result.MaxDrawdown <= 0.20 && result.OutSampleAvgReturn > 0 &&
+		result.DataCoverage >= config.MinDataCoverage && result.BenchmarkAvailable:
 		quality = "reference"
 	case result.TradeCount >= 10 && result.AvgReturn > 0:
 		quality = "observe"
@@ -298,14 +326,22 @@ func backtestPayload(config BacktestConfig, result *ValidationResult) map[string
 		"metrics": map[string]any{
 			"qualityRating":        quality,
 			"annualizedReturn":     result.AnnualizedReturn,
+			"annualizedVolatility": result.AnnualizedVolatility,
+			"sharpeRatio":          result.SharpeRatio,
+			"sortinoRatio":         result.SortinoRatio,
+			"calmarRatio":          result.CalmarRatio,
+			"maxSingleTradeLoss":   result.MaxSingleTradeLoss,
 			"benchmarkCode":        result.BenchmarkCode,
 			"benchmarkReturn":      result.BenchmarkReturn,
+			"benchmarkAvailable":   result.BenchmarkAvailable,
 			"excessReturn":         result.ExcessReturn,
 			"turnoverRate":         result.TurnoverRate,
 			"averageHoldingDays":   result.AverageHoldingDays,
 			"sampleCount":          result.TradeCount,
 			"outSampleAvgReturn":   result.OutSampleAvgReturn,
 			"outSampleMaxDrawdown": result.OutSampleMaxDrawdown,
+			"outSampleTradeCount":  result.OutSampleTradeCount,
+			"walkForwardFolds":     result.WalkForwardFolds,
 			"dataCoverage":         result.DataCoverage,
 			"noLookaheadPassed":    result.NoLookaheadPassed,
 		},
@@ -406,6 +442,9 @@ func (s *PredictionService) SaveHypothesis(hypothesisID uint) error {
 	if hypothesis.StrategyVersion != CurrentStrategyVersion {
 		return fmt.Errorf("该结果使用旧版回测口径，请重新生成预测后再启用正式监控")
 	}
+	if hypothesis.FeatureVersion != CurrentFeatureVersion {
+		return fmt.Errorf("该结果使用旧版或非复权特征，请同步数据并重新回测后再启用正式监控")
+	}
 	if !hypothesis.NoLookaheadPassed {
 		return fmt.Errorf("策略未通过未来函数检查，不能保存监控")
 	}
@@ -418,9 +457,15 @@ func (s *PredictionService) SaveHypothesis(hypothesisID uint) error {
 	if hypothesis.AvgReturn <= 0 {
 		return fmt.Errorf("平均收益未通过最低要求，不能保存监控")
 	}
+	if hypothesis.DataCoverage < DefaultBacktestConfig().MinDataCoverage {
+		return fmt.Errorf("特征覆盖率不足，不能保存监控")
+	}
+	if !hypothesis.BenchmarkAvailable {
+		return fmt.Errorf("基准数据缺失，无法确认超额收益，不能启用正式监控")
+	}
 
-	if hypothesis.OutSampleAvgReturn < -0.02 {
-		return fmt.Errorf("样本外收益偏弱，不建议启用正式监控")
+	if hypothesis.OutSampleTradeCount < 15 || hypothesis.OutSampleAvgReturn <= 0 {
+		return fmt.Errorf("样本外有效交易不足或收益未通过，不能启用正式监控")
 	}
 
 	result := db.Dao.Model(&models.PredictionHypothesis{}).
@@ -534,18 +579,18 @@ func (s *PredictionService) GetGenerationAudit(sessionID uint) []models.Predicti
 }
 
 type matchedStrategyFact struct {
-	ID           uint    `json:"id"`
-	Name         string  `json:"name"`
-	EntryMatched bool    `json:"entryMatched"`
-	ExitMatched  bool    `json:"exitMatched"`
-	WinRate      float64 `json:"winRate"`
-	AvgReturn    float64 `json:"avgReturn"`
-	MaxDrawdown  float64 `json:"maxDrawdown"`
-	TradeCount   int     `json:"tradeCount"`
-	PoolTradeCount  int  `json:"poolTradeCount"`
-	StockTradeCount int  `json:"stockTradeCount"`
-	SampleReady     bool `json:"sampleReady"`
-	MonitorReady bool    `json:"monitorReady"`
+	ID              uint    `json:"id"`
+	Name            string  `json:"name"`
+	EntryMatched    bool    `json:"entryMatched"`
+	ExitMatched     bool    `json:"exitMatched"`
+	WinRate         float64 `json:"winRate"`
+	AvgReturn       float64 `json:"avgReturn"`
+	MaxDrawdown     float64 `json:"maxDrawdown"`
+	TradeCount      int     `json:"tradeCount"`
+	PoolTradeCount  int     `json:"poolTradeCount"`
+	StockTradeCount int     `json:"stockTradeCount"`
+	SampleReady     bool    `json:"sampleReady"`
+	MonitorReady    bool    `json:"monitorReady"`
 }
 
 type quoteSnapshot struct {
@@ -579,6 +624,8 @@ func (s *PredictionService) generateSessionDecisions(
 	}
 	quotes := latestQuoteMap(universe)
 	holdings := holdingMap(universe)
+	previousFeatures := s.previousFeatureMap(features)
+	previousActions := latestDecisionActionMap(universe, session.ID)
 
 	_ = db.Dao.Where("session_id = ?", session.ID).Delete(&models.PredictionDecision{}).Error
 	decisions := make([]models.PredictionDecision, 0, len(features))
@@ -587,7 +634,7 @@ func (s *PredictionService) generateSessionDecisions(
 		if !ok {
 			continue
 		}
-		decision := s.buildDecisionForStock(session, hypotheses, f, quotes, holdings)
+		decision := s.buildDecisionForStock(session, hypotheses, f, previousFeatures, previousActions, quotes, holdings)
 		if decision.StockCode == "" {
 			continue
 		}
@@ -608,11 +655,37 @@ func (s *PredictionService) latestFeatureMap(universe []string, endDate string) 
 			continue
 		}
 		var feature models.StockFeature
-		err := db.Dao.Where("stock_code = ? AND date <= ?", code, endDate).
+		err := db.Dao.Where("stock_code = ? AND date <= ? AND feature_version = ? AND adjusted = ?", code, endDate, CurrentFeatureVersion, true).
 			Order("date desc").
 			First(&feature).Error
 		if err == nil {
 			result[strings.ToLower(code)] = feature
+		}
+	}
+	return result
+}
+
+func (s *PredictionService) previousFeatureMap(current map[string]models.StockFeature) map[string]models.StockFeature {
+	result := make(map[string]models.StockFeature, len(current))
+	for key, feature := range current {
+		var previous models.StockFeature
+		if db.Dao.Where("stock_code = ? AND date < ? AND feature_version = ?", feature.StockCode, feature.Date, CurrentFeatureVersion).
+			Order("date desc").First(&previous).Error == nil {
+			result[key] = previous
+		}
+	}
+	return result
+}
+
+func latestDecisionActionMap(universe []string, excludeSessionID uint) map[string]string {
+	result := make(map[string]string, len(universe))
+	var decisions []models.PredictionDecision
+	db.Dao.Where("stock_code IN ? AND session_id <> ?", universe, excludeSessionID).
+		Order("created_at desc").Find(&decisions)
+	for _, decision := range decisions {
+		key := strings.ToLower(decision.StockCode)
+		if _, exists := result[key]; !exists {
+			result[key] = decision.Action
 		}
 	}
 	return result
@@ -670,16 +743,24 @@ func (s *PredictionService) buildDecisionForStock(
 	session *models.PredictionSession,
 	hypotheses []models.PredictionHypothesis,
 	f models.StockFeature,
+	previousFeatures map[string]models.StockFeature,
+	previousActions map[string]string,
 	quotes map[string]quoteSnapshot,
 	holdings map[string]holdingSnapshot,
 ) models.PredictionDecision {
 	codeKey := strings.ToLower(f.StockCode)
+	var previous *models.StockFeature
+	if value, ok := previousFeatures[codeKey]; ok {
+		previous = &value
+	}
 	return NewDecisionEngine().Build(DecisionContext{
-		Session:    session,
-		Hypotheses: hypotheses,
-		Feature:    f,
-		Quote:      quotes[codeKey],
-		Holding:    holdings[codeKey],
+		Session:         session,
+		Hypotheses:      hypotheses,
+		Feature:         f,
+		PreviousFeature: previous,
+		Quote:           quotes[codeKey],
+		Holding:         holdings[codeKey],
+		PreviousAction:  previousActions[codeKey],
 	})
 }
 
@@ -771,21 +852,25 @@ func actionText(action string) string {
 	}
 }
 
-func decisionConfidence(score float64, sampleWarning bool) string {
-	if sampleWarning {
+func decisionConfidence(probability float64, stockSampleCount int, sampleWarning bool) string {
+	if sampleWarning || stockSampleCount < MinStockStrategySamples {
 		return "low"
 	}
-	if score >= 75 {
+	distance := math.Abs(probability - 0.5)
+	if stockSampleCount >= 30 && distance >= 0.15 {
 		return "high"
 	}
-	if score >= 55 {
+	if distance >= 0.07 {
 		return "medium"
 	}
 	return "low"
 }
 
 func hypothesisMonitorReady(h models.PredictionHypothesis) bool {
-	return h.StrategyVersion == CurrentStrategyVersion && h.NoLookaheadPassed && h.TradeCount >= MinPoolStrategySamples && h.MaxDrawdown <= 0.20 && h.AvgReturn > 0 && h.OutSampleAvgReturn >= -0.02
+	return h.StrategyVersion == CurrentStrategyVersion && h.FeatureVersion == CurrentFeatureVersion &&
+		h.NoLookaheadPassed && h.TradeCount >= MinPoolStrategySamples && h.OutSampleTradeCount >= 15 &&
+		h.MaxDrawdown <= 0.20 && h.AvgReturn > 0 && h.OutSampleAvgReturn > 0 &&
+		h.DataCoverage >= DefaultBacktestConfig().MinDataCoverage && h.BenchmarkAvailable
 }
 
 func parseFloat(raw string) float64 {
@@ -835,6 +920,14 @@ func (s *PredictionService) ScanSignals() {
 	db.Dao.Where("status = ?", "active").Find(&hypotheses)
 
 	today := time.Now().Format("2006-01-02")
+	var signalDate string
+	db.Dao.Model(&models.StockFeature{}).
+		Where("date <= ? AND feature_version = ? AND adjusted = ?", today, CurrentFeatureVersion, true).
+		Select("MAX(date)").Scan(&signalDate)
+	if signalDate == "" || signalDate != today {
+		logger.SugaredLogger.Warnf("scan prediction signals skipped: current feature not ready, latest=%s today=%s", signalDate, today)
+		return
+	}
 	for _, h := range hypotheses {
 		var rule Rule
 		if err := json.Unmarshal([]byte(h.RuleJSON), &rule); err != nil {
@@ -849,6 +942,9 @@ func (s *PredictionService) ScanSignals() {
 
 		poolService := NewStockPoolService()
 		universe := poolService.GetStockPool(stockScope)
+		if strings.TrimSpace(session.UniverseJSON) != "" {
+			_ = json.Unmarshal([]byte(session.UniverseJSON), &universe)
+		}
 		if len(universe) == 0 {
 			logger.SugaredLogger.Warnf("scan prediction signals skipped: hypothesis=%d stock scope %s is empty", h.ID, stockScope)
 			continue
@@ -857,35 +953,40 @@ func (s *PredictionService) ScanSignals() {
 			universe = nil
 		}
 
-		features := s.validator.repo.GetByDate(today, universe)
+		features := s.validator.repo.GetByDate(signalDate, universe)
+		currentMap := stockFeatureMap(features)
+		previousMap := s.previousFeatureMap(currentMap)
 		for _, f := range features {
-			if s.validator.matchConditions(rule.EntryConditions, f) {
+			previous := featurePointer(previousMap, strings.ToLower(f.StockCode))
+			if previous == nil {
+				previous = featurePointer(previousMap, f.StockCode)
+			}
+			if NewStrategyEngine().MatchConditionsWithPrevious(rule.EntryConditions, f, previous) {
 				// 检查是否已经存在
 				var count int64
 				db.Dao.Model(&models.PredictionSignal{}).
-					Where("hypothesis_id = ? AND stock_code = ? AND signal_date = ?", h.ID, f.StockCode, today).
+					Where("hypothesis_id = ? AND stock_code = ? AND signal_date = ?", h.ID, f.StockCode, signalDate).
 					Count(&count)
 				if count > 0 {
 					continue
 				}
 
-				targetDate, _ := time.Parse("2006-01-02", today)
 				dataAsOf := f.DataAsOf
 				if dataAsOf.IsZero() {
 					dataAsOf = time.Now()
 				}
-				decisionID := fmt.Sprintf("pred-%d-%s-%s", h.ID, f.StockCode, today)
+				decisionID := fmt.Sprintf("pred-%d-%s-%s", h.ID, f.StockCode, signalDate)
 				reasonsJSON, _ := json.Marshal([]string{"active 预测假设入场条件满足"})
 				risksJSON, _ := json.Marshal([]string{"仅供观察，不代表盈利概率"})
 				signal := models.PredictionSignal{
 					HypothesisID: h.ID,
 					StockCode:    f.StockCode,
 					StockName:    f.StockCode,
-					SignalDate:   today,
-					EntryPrice:   f.Close,
-					TargetDate:   targetDate.AddDate(0, 0, h.TimeHorizon).Format("2006-01-02"),
+					SignalDate:   signalDate,
+					EntryPrice:   0,
+					TargetDate:   "",
 					TargetReturn: h.TargetReturn,
-					Status:       "pending",
+					Status:       "pending_entry",
 					DecisionID:   decisionID,
 					DataAsOf:     dataAsOf,
 					ReasonsJSON:  string(reasonsJSON),
@@ -921,9 +1022,9 @@ func (s *PredictionService) ScanSignals() {
 					StrategyID:       h.ID,
 					StrategyVersion:  h.StrategyVersion,
 					FeatureVersion:   f.FeatureVersion,
-					SignalDate:       today,
+					SignalDate:       signalDate,
 					DataAsOf:         dataAsOf,
-					ValidUntil:       targetDate.AddDate(0, 0, 1),
+					ValidUntil:       time.Now().AddDate(0, 0, 5),
 					CreatedAt:        time.Now(),
 				}).Error
 			}
@@ -965,23 +1066,115 @@ func (s *PredictionService) DailyValidateSignals() {
 	}
 
 	var signals []models.PredictionSignal
-	db.Dao.Where("status = ?", "pending").Find(&signals)
+	db.Dao.Where("status IN ?", []string{"pending_entry", "pending"}).Find(&signals)
 
 	today := time.Now().Format("2006-01-02")
+	config := DefaultBacktestConfig()
+	fillSimulator := NewFillSimulator(config)
 	for _, signal := range signals {
-		if signal.TargetDate <= today {
-			// 获取目标日期收盘价
-			feature, ok := s.validator.repo.GetFirstOnOrAfter(signal.StockCode, signal.TargetDate)
-			if ok {
-				exitPrice := feature.Close
-				if signal.EntryPrice > 0 {
-					signal.ActualReturn = (exitPrice - signal.EntryPrice) / signal.EntryPrice
-				}
-				signal.Hit = signal.ActualReturn >= signal.TargetReturn
+		var hypothesis models.PredictionHypothesis
+		if db.Dao.First(&hypothesis, signal.HypothesisID).Error != nil {
+			continue
+		}
+		if signal.Status == "pending_entry" {
+			entryFeature, ok := s.validator.repo.GetFirstAfter(signal.StockCode, signal.SignalDate)
+			if !ok || entryFeature.Open <= 0 {
+				continue
 			}
-			signal.Status = "validated"
-			signal.ValidatedAt = time.Now()
+			var signalFeature *models.StockFeature
+			if rows := s.validator.repo.GetFeatureRange(signal.StockCode, signal.SignalDate, signal.SignalDate); len(rows) > 0 {
+				signalFeature = &rows[0]
+			}
+			entryOrder := SimOrder{ID: signal.DecisionID, StockCode: signal.StockCode, Side: OrderSideBuy, Quantity: 100, PriceHint: entryFeature.Open}
+			entryFill, tradable := fillSimulator.Fill(entryOrder, entryFeature, signalFeature, entryFeature.Date)
+			if !tradable {
+				signal.Status = "missed_entry"
+				signal.ValidatedAt = time.Now()
+				db.Dao.Save(&signal)
+				continue
+			}
+			signal.EntryDate = entryFeature.Date
+			signal.EntryPrice = entryFill.Price
+			signal.Status = "pending"
 			db.Dao.Save(&signal)
 		}
+		if signal.TargetDate == "" {
+			signal.TargetDate = s.nthTradingDateAfter(signal.EntryDate, hypothesis.TimeHorizon)
+			if signal.TargetDate == "" {
+				continue
+			}
+			db.Dao.Save(&signal)
+		}
+		if signal.TargetDate <= today {
+			points := s.validator.repo.GetFeatureRange(signal.StockCode, signal.EntryDate, today)
+			if len(points) == 0 || points[0].Date != signal.EntryDate {
+				continue
+			}
+			var signalFeature *models.StockFeature
+			if rows := s.validator.repo.GetFeatureRange(signal.StockCode, signal.SignalDate, signal.SignalDate); len(rows) > 0 {
+				signalFeature = &rows[0]
+			}
+			entryOrder := SimOrder{ID: signal.DecisionID, StockCode: signal.StockCode, Side: OrderSideBuy, Quantity: 100, PriceHint: points[0].Open}
+			entryFill, entryFilled := fillSimulator.Fill(entryOrder, points[0], signalFeature, points[0].Date)
+			if !entryFilled || entryFill.NetAmount <= 0 {
+				continue
+			}
+
+			var exitFill SimFill
+			exitIndex := -1
+			for i := range points {
+				if points[i].Date < signal.TargetDate {
+					continue
+				}
+				var previous *models.StockFeature
+				if i > 0 {
+					previous = &points[i-1]
+				}
+				exitOrder := SimOrder{ID: signal.DecisionID, StockCode: signal.StockCode, Side: OrderSideSell, Quantity: entryFill.Quantity, PriceHint: points[i].Close}
+				if fill, filled := fillSimulator.Fill(exitOrder, points[i], previous, points[i].Date); filled {
+					exitFill = fill
+					exitIndex = i
+					break
+				}
+			}
+			if exitIndex < 0 {
+				continue
+			}
+
+			signal.EntryPrice = entryFill.Price
+			signal.ActualReturn = exitFill.NetAmount/entryFill.NetAmount - 1
+			for _, point := range points[:exitIndex+1] {
+				signal.MaxReturn = math.Max(signal.MaxReturn, (point.High-signal.EntryPrice)/signal.EntryPrice)
+				signal.MaxDrawdown = math.Max(signal.MaxDrawdown, (signal.EntryPrice-point.Low)/signal.EntryPrice)
+			}
+			signal.Hit = signal.ActualReturn >= signal.TargetReturn
+			signal.Status = "validated"
+			signal.ValidatedAt = time.Now()
+			if err := db.Dao.Transaction(func(tx *gorm.DB) error {
+				if err := tx.Save(&signal).Error; err != nil {
+					return err
+				}
+				return tx.Model(&models.PredictionHypothesis{}).Where("id = ?", signal.HypothesisID).Updates(map[string]any{
+					"valid_count":  gorm.Expr("valid_count + 1"),
+					"valid_return": gorm.Expr("(1 + valid_return) * (1 + ?) - 1", signal.ActualReturn),
+				}).Error
+			}).Error; err != nil {
+				logger.SugaredLogger.Errorf("validate prediction signal %d error: %v", signal.ID, err)
+			}
+		}
 	}
+}
+
+func (s *PredictionService) nthTradingDateAfter(date string, horizon int) string {
+	if horizon <= 0 {
+		horizon = 1
+	}
+	var dates []string
+	db.Dao.Model(&models.StockFeature{}).
+		Where("stock_code IN ? AND date > ? AND feature_version = ?", stockCodeVariants(DefaultBacktestConfig().BenchmarkCode), date, CurrentFeatureVersion).
+		Distinct("date").Order("date asc").Limit(horizon).Pluck("date", &dates)
+	if len(dates) < horizon {
+		return ""
+	}
+	return dates[horizon-1]
 }

@@ -1,25 +1,68 @@
 package backtest
 
 import (
+	"fmt"
 	"go-stock/backend/db"
 	"go-stock/backend/models"
 	"strings"
 )
 
-func loadStockTradeCounts(hypotheses []models.PredictionHypothesis, stockCode string) map[uint]int {
-	counts := make(map[uint]int, len(hypotheses))
+type stockTradeStat struct {
+	Count     int
+	Wins      int
+	AvgReturn float64
+}
+
+func loadStockTradeStats(hypotheses []models.PredictionHypothesis, stockCode string) map[uint]stockTradeStat {
+	stats := make(map[uint]stockTradeStat, len(hypotheses))
 	variants := stockCodeVariants(stockCode)
 	if len(variants) == 0 {
-		return counts
+		return stats
 	}
 	for _, hypothesis := range hypotheses {
-		var count int64
-		db.Dao.Model(&models.PredictionTrade{}).
+		var trades []models.PredictionTrade
+		db.Dao.
 			Where("hypothesis_id = ? AND stock_code IN ?", hypothesis.ID, variants).
-			Count(&count)
-		counts[hypothesis.ID] = int(count)
+			Find(&trades)
+		stat := stockTradeStat{Count: len(trades)}
+		for _, trade := range trades {
+			stat.AvgReturn += trade.ReturnRate
+			if trade.ReturnRate > 0 {
+				stat.Wins++
+			}
+		}
+		if stat.Count > 0 {
+			stat.AvgReturn /= float64(stat.Count)
+		}
+		stats[hypothesis.ID] = stat
 	}
-	return counts
+	return stats
+}
+
+func loadUniqueTradeSamples(hypotheses []models.PredictionHypothesis, stockCode string) (poolCount, stockCount int) {
+	ids := make([]uint, 0, len(hypotheses))
+	for _, hypothesis := range hypotheses {
+		ids = append(ids, hypothesis.ID)
+	}
+	if len(ids) == 0 {
+		return 0, 0
+	}
+	var trades []models.PredictionTrade
+	db.Dao.Where("hypothesis_id IN ?", ids).Find(&trades)
+	poolKeys := make(map[string]struct{}, len(trades))
+	stockKeys := make(map[string]struct{})
+	variants := make(map[string]bool)
+	for _, variant := range stockCodeVariants(stockCode) {
+		variants[strings.ToLower(variant)] = true
+	}
+	for _, trade := range trades {
+		key := fmt.Sprintf("%s|%s|%s", strings.ToLower(trade.StockCode), trade.BuyDate, trade.SellDate)
+		poolKeys[key] = struct{}{}
+		if variants[strings.ToLower(trade.StockCode)] {
+			stockKeys[key] = struct{}{}
+		}
+	}
+	return len(poolKeys), len(stockKeys)
 }
 
 func loadDecisionDataStatus(session *models.PredictionSession, feature models.StockFeature) DecisionDataStatus {
@@ -30,7 +73,7 @@ func loadDecisionDataStatus(session *models.PredictionSession, feature models.St
 	}
 
 	featureQuery := db.Dao.Model(&models.StockFeature{}).
-		Where("stock_code IN ? AND date >= ? AND date <= ?", stockCodeVariants(feature.StockCode), session.StartDate, session.EndDate)
+		Where("stock_code IN ? AND date >= ? AND date <= ? AND feature_version = ?", stockCodeVariants(feature.StockCode), session.StartDate, session.EndDate, CurrentFeatureVersion)
 	featureQuery.Count(&status.FeatureRows)
 	var first models.StockFeature
 	if featureQuery.Order("date asc").First(&first).Error == nil {

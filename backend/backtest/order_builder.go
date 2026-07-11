@@ -2,6 +2,7 @@ package backtest
 
 import (
 	"fmt"
+	"math"
 	"sort"
 )
 
@@ -18,6 +19,7 @@ func (b *OrderBuilder) BuildEntryOrders(
 	totalEquity float64,
 	held map[string]bool,
 	maxHoldings int,
+	lotSize int,
 	orderDate string,
 ) []SimOrder {
 	if maxHoldings <= 0 {
@@ -30,8 +32,14 @@ func (b *OrderBuilder) BuildEntryOrders(
 		return nil
 	}
 
+	if lotSize <= 0 {
+		lotSize = 100
+	}
 	sort.SliceStable(signals, func(i, j int) bool {
-		return signals[i].StockCode < signals[j].StockCode
+		if signals[i].Score == signals[j].Score {
+			return signals[i].StockCode < signals[j].StockCode
+		}
+		return signals[i].Score > signals[j].Score
 	})
 
 	targetAmount := totalEquity / float64(maxHoldings)
@@ -57,7 +65,11 @@ func (b *OrderBuilder) BuildEntryOrders(
 		if amount <= 0 {
 			continue
 		}
-		quantity := amount / price
+		quantity := math.Floor(amount/price/float64(lotSize)) * float64(lotSize)
+		if quantity <= 0 {
+			continue
+		}
+		amount = quantity * price
 		orders = append(orders, SimOrder{
 			ID:         fmt.Sprintf("entry-%s-%s", signal.StockCode, orderDate),
 			StockCode:  signal.StockCode,

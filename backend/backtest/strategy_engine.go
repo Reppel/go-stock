@@ -3,6 +3,7 @@ package backtest
 import (
 	"encoding/json"
 	"go-stock/backend/models"
+	"math"
 	"strings"
 )
 
@@ -13,14 +14,25 @@ func NewStrategyEngine() *StrategyEngine {
 }
 
 func (e *StrategyEngine) GenerateSignals(rule Rule, features []models.StockFeature) []Signal {
+	return e.GenerateSignalsWithPrevious(rule, features, nil)
+}
+
+func (e *StrategyEngine) GenerateSignalsWithPrevious(rule Rule, features []models.StockFeature, previous map[string]models.StockFeature) []Signal {
 	signals := make([]Signal, 0)
 	for _, f := range features {
-		if e.MatchConditions(rule.EntryConditions, f) {
+		previousFeature, hasPrevious := previous[f.StockCode]
+		var prior *models.StockFeature
+		if hasPrevious {
+			prior = &previousFeature
+		}
+		if e.MatchConditionsWithPrevious(rule.EntryConditions, f, prior) {
+			score := e.scoreFeature(rule, f, prior)
 			signals = append(signals, Signal{
 				StockCode:  f.StockCode,
 				StockName:  f.StockCode,
 				Date:       f.Date,
 				Price:      f.Close,
+				Score:      score,
 				ReasonJSON: RuleToJSON(Rule{EntryConditions: rule.EntryConditions}),
 			})
 		}
@@ -38,7 +50,7 @@ func (e *StrategyEngine) GenerateQuantSignals(rule Rule, features []models.Stock
 			Date:       signal.Date,
 			Side:       QuantSignalBuy,
 			Price:      signal.Price,
-			Score:      e.ScoreEntry(rule, signal.StockCode, features),
+			Score:      signal.Score,
 			ReasonJSON: signal.ReasonJSON,
 			Source:     "rule",
 		})
@@ -47,8 +59,15 @@ func (e *StrategyEngine) GenerateQuantSignals(rule Rule, features []models.Stock
 }
 
 func (e *StrategyEngine) MatchConditions(conditions []Condition, f models.StockFeature) bool {
+	return e.MatchConditionsWithPrevious(conditions, f, nil)
+}
+
+func (e *StrategyEngine) MatchConditionsWithPrevious(conditions []Condition, f models.StockFeature, previous *models.StockFeature) bool {
+	if len(conditions) == 0 {
+		return false
+	}
 	for _, c := range conditions {
-		if !e.MatchCondition(c, f) {
+		if !e.MatchConditionWithPrevious(c, f, previous) {
 			return false
 		}
 	}
@@ -56,6 +75,10 @@ func (e *StrategyEngine) MatchConditions(conditions []Condition, f models.StockF
 }
 
 func (e *StrategyEngine) MatchCondition(c Condition, f models.StockFeature) bool {
+	return e.MatchConditionWithPrevious(c, f, nil)
+}
+
+func (e *StrategyEngine) MatchConditionWithPrevious(c Condition, f models.StockFeature, previous *models.StockFeature) bool {
 	value := e.GetIndicatorValue(c.Indicator, f)
 	ref := c.Value
 	if strings.TrimSpace(c.Ref) != "" {
@@ -75,9 +98,38 @@ func (e *StrategyEngine) MatchCondition(c Condition, f models.StockFeature) bool
 		return value == ref
 	case "!=":
 		return value != ref
+	case "cross_up", "crosses_above":
+		if previous == nil {
+			return false
+		}
+		previousValue := e.GetIndicatorValue(c.Indicator, *previous)
+		previousRef := c.Value
+		if strings.TrimSpace(c.Ref) != "" {
+			previousRef = e.GetIndicatorValue(c.Ref, *previous)
+		}
+		return previousValue <= previousRef && value > ref
+	case "cross_down", "crosses_below":
+		if previous == nil {
+			return false
+		}
+		previousValue := e.GetIndicatorValue(c.Indicator, *previous)
+		previousRef := c.Value
+		if strings.TrimSpace(c.Ref) != "" {
+			previousRef = e.GetIndicatorValue(c.Ref, *previous)
+		}
+		return previousValue >= previousRef && value < ref
 	default:
 		return false
 	}
+}
+
+func (e *StrategyEngine) MatchAnyConditionWithPrevious(conditions []Condition, f models.StockFeature, previous *models.StockFeature) bool {
+	for _, condition := range conditions {
+		if e.MatchConditionWithPrevious(condition, f, previous) {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *StrategyEngine) GetIndicatorValue(indicator string, f models.StockFeature) float64 {
@@ -145,6 +197,23 @@ func (e *StrategyEngine) ScoreEntry(rule Rule, stockCode string, features []mode
 			}
 		}
 		break
+	}
+	return score
+}
+
+func (e *StrategyEngine) scoreFeature(rule Rule, feature models.StockFeature, previous *models.StockFeature) float64 {
+	score := float64(len(rule.EntryConditions)) * 10
+	if feature.ATR > 0 && feature.Close > 0 {
+		score += math.Max(0, 10-math.Min(feature.ATR/feature.Close*100, 10))
+	}
+	if feature.VolumeRatio > 1 {
+		score += math.Min((feature.VolumeRatio-1)*5, 10)
+	}
+	if feature.FundFlow5 > 0 {
+		score += 5
+	}
+	if previous != nil && feature.ChangeRate20 > previous.ChangeRate20 {
+		score += 3
 	}
 	return score
 }

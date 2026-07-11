@@ -11,6 +11,7 @@ import (
 	"go-stock/backend/logger"
 	"go-stock/backend/models"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/robfig/cron/v3"
@@ -19,6 +20,28 @@ import (
 )
 
 type CronTaskApi struct{}
+
+type taskSkippedError struct{ reason string }
+
+func (e *taskSkippedError) Error() string { return e.reason }
+
+type taskPartialError struct{ reason string }
+
+func (e *taskPartialError) Error() string { return e.reason }
+
+var (
+	activeCronTaskRuns sync.Map
+	aTradingDayCache   sync.Map
+	shanghaiLocation   = time.FixedZone("Asia/Shanghai", 8*60*60)
+)
+
+type tradingDayCacheValue struct {
+	trading bool
+	expires time.Time
+}
+
+func skipTask(reason string) error    { return &taskSkippedError{reason: reason} }
+func partialTask(reason string) error { return &taskPartialError{reason: reason} }
 
 func NewCronTaskApi() *CronTaskApi {
 	return &CronTaskApi{}
@@ -197,7 +220,7 @@ func (a *CronTaskApi) EnsureSystemTask(task *models.CronTask) error {
 	if err != nil {
 		return err
 	}
-	return db.Dao.Model(&existing).Updates(map[string]any{
+	updates := map[string]any{
 		"name":         task.Name,
 		"cron_expr":    task.CronExpr,
 		"target":       task.Target,
@@ -209,7 +232,11 @@ func (a *CronTaskApi) EnsureSystemTask(task *models.CronTask) error {
 		"visible":      task.Visible,
 		"allow_delete": task.AllowDelete,
 		"owner":        task.Owner,
-	}).Error
+	}
+	if existing.CronExpr != task.CronExpr {
+		updates["next_run_at"] = nil
+	}
+	return db.Dao.Model(&existing).Updates(updates).Error
 }
 
 func (a *CronTaskApi) EnableTask(id uint, enable bool) error {
@@ -274,17 +301,39 @@ func (a *CronTaskApi) SearchTasks(keyword string) []models.CronTask {
 }
 
 func (a *CronTaskApi) ExecuteTask(ctx context.Context, task *models.CronTask) error {
+	if task == nil {
+		return fmt.Errorf("定时任务为空")
+	}
 	logger.SugaredLogger.Infof("开始执行定时任务：%s (ID: %d)", task.Name, task.ID)
 
 	now := time.Now()
 	nextRunAt := a.CalculateNextRunTime(task.CronExpr)
+	runKey := fmt.Sprintf("%d:%s", task.ID, task.TaskType)
+	if _, loaded := activeCronTaskRuns.LoadOrStore(runKey, struct{}{}); loaded {
+		runResult := "跳过: 上一轮任务仍在执行"
+		_ = a.UpdateRunInfo(task.ID, now, &nextRunAt, runResult)
+		logger.SugaredLogger.Warnf("跳过重叠定时任务：%s", task.Name)
+		return nil
+	}
+	defer activeCronTaskRuns.Delete(runKey)
 
 	var runResult string
 	err := a.executeTaskByType(ctx, task)
-	if err != nil {
+	var skipped *taskSkippedError
+	var partial *taskPartialError
+	switch {
+	case errors.As(err, &skipped):
+		runResult = "跳过: " + skipped.reason
+		logger.SugaredLogger.Infof("定时任务跳过：%s，原因：%s", task.Name, skipped.reason)
+		err = nil
+	case errors.As(err, &partial):
+		runResult = "部分成功: " + partial.reason
+		logger.SugaredLogger.Warnf("定时任务部分成功：%s，详情：%s", task.Name, partial.reason)
+		err = nil
+	case err != nil:
 		runResult = "失败: " + err.Error()
 		logger.SugaredLogger.Errorf("执行定时任务失败：%s, 错误：%v", task.Name, err)
-	} else {
+	default:
 		runResult = "成功"
 	}
 
@@ -495,6 +544,9 @@ func (a *CronTaskApi) executeGlobalStockIndexCache(ctx context.Context, task *mo
 
 func (a *CronTaskApi) executePredictionSyncFeatures(ctx context.Context, task *models.CronTask) error {
 	logger.SugaredLogger.Infof("执行预测工厂特征同步任务：%s", task.Name)
+	if !isATradingDay(time.Now()) {
+		return skipTask("当前不是A股交易日")
+	}
 	var params struct {
 		StockScope string `json:"stockScope"`
 		Days       int    `json:"days"`
@@ -512,15 +564,36 @@ func (a *CronTaskApi) executePredictionSyncFeatures(ctx context.Context, task *m
 		params.Days = 365
 	}
 
-	_, err := backtest.NewFeatureSyncService().RunFeatureSync(params.StockScope, params.Days)
+	service := backtest.NewFeatureSyncService().TechnicalOnly()
+	job, err := service.RunFeatureSync(params.StockScope, params.Days)
 	if err != nil {
 		return err
+	}
+	if job == nil {
+		return fmt.Errorf("特征同步未返回任务状态")
+	}
+	switch job.Status {
+	case "running":
+		return skipTask(fmt.Sprintf("特征同步任务 %d 已在运行", job.ID))
+	case "failed":
+		return fmt.Errorf("特征同步失败：%s", strings.TrimSpace(job.ErrorMessage))
+	case "partial":
+		return partialTask(fmt.Sprintf("特征同步完成 %d/%d，失败 %d：%s", job.Finished, job.Total, job.Failed, strings.TrimSpace(job.ErrorMessage)))
+	}
+	freshness := service.GetFeatureFreshness(params.StockScope)
+	latestDate, _ := freshness["latestDate"].(string)
+	today := time.Now().In(shanghaiLocation).Format("2006-01-02")
+	if latestDate != today {
+		return partialTask(fmt.Sprintf("技术特征接口完成，但最新交易日仍为 %s", latestDate))
 	}
 	return nil
 }
 
 func (a *CronTaskApi) executePredictionSyncMoneyFlow(ctx context.Context, task *models.CronTask) error {
 	logger.SugaredLogger.Infof("执行预测工厂资金流同步任务：%s", task.Name)
+	if !isATradingDay(time.Now()) {
+		return skipTask("当前不是A股交易日")
+	}
 	var params struct {
 		StockScope string `json:"stockScope"`
 		Days       int    `json:"days"`
@@ -542,22 +615,53 @@ func (a *CronTaskApi) executePredictionSyncMoneyFlow(ctx context.Context, task *
 	if err != nil {
 		return err
 	}
-	logger.SugaredLogger.Infof("预测工厂资金流同步完成：股票 %d，资金流 %d，MAC %d，行业 %d，概念 %d，失败 %d，部分历史缺失 %d",
-		result.StockCount, result.FlowRows, result.MacRows, result.SectorRows, result.ConceptRows, result.FailedStocks, result.PartialStocks)
+	logger.SugaredLogger.Infof("预测工厂资金流同步完成：股票 %d，当日新鲜 %d，资金流 %d，MAC %d，行业 %d(%s)，概念 %d(%s)，失败 %d，部分历史缺失 %d",
+		result.StockCount, result.FreshStocks, result.FlowRows, result.MacRows, result.SectorRows, result.SectorTradeDate,
+		result.ConceptRows, result.ConceptTradeDate, result.FailedStocks, result.PartialStocks)
+	if result.FailedStocks >= len(stockCodes) && len(stockCodes) > 0 {
+		return fmt.Errorf("全部 %d 只股票资金流同步失败", len(stockCodes))
+	}
+	today := time.Now().In(shanghaiLocation).Format("2006-01-02")
+	if result.LatestTradeDate != today {
+		return partialTask(fmt.Sprintf("未取得当日资金流，最新数据为 %s", result.LatestTradeDate))
+	}
+	if result.SectorTradeDate != today || result.ConceptTradeDate != today {
+		return partialTask(fmt.Sprintf("板块资金流未全部就绪：行业 %s，概念 %s", result.SectorTradeDate, result.ConceptTradeDate))
+	}
+	if result.FreshStocks < len(stockCodes) || result.FailedStocks > 0 || result.PartialStocks > 0 {
+		return partialTask(fmt.Sprintf("当日新鲜 %d/%d，失败 %d，历史数据不完整 %d", result.FreshStocks, len(stockCodes), result.FailedStocks, result.PartialStocks))
+	}
 	return nil
 }
 
 func (a *CronTaskApi) executePredictionScanSignals(ctx context.Context, task *models.CronTask) error {
 	logger.SugaredLogger.Infof("执行预测工厂扫描信号任务：%s", task.Name)
-	backtest.NewPredictionService().ScanSignals()
+	if !isATradingDay(time.Now()) {
+		return skipTask("当前不是A股交易日")
+	}
+	result, err := backtest.NewPredictionService().ScanSignals()
+	if err != nil {
+		return err
+	}
+	today := time.Now().In(shanghaiLocation).Format("2006-01-02")
+	if result.FeatureDate != today {
+		return skipTask(fmt.Sprintf("当日技术特征未就绪，最新数据为 %s", result.FeatureDate))
+	}
+	if result.ActiveHypotheses == 0 {
+		if result.RefreshedDecisions > 0 {
+			return partialTask(fmt.Sprintf("已刷新 %d 条观察建议，没有启用正式监控的信号策略", result.RefreshedDecisions))
+		}
+		return skipTask("没有启用正式或观察监控的策略")
+	}
+	logger.SugaredLogger.Infof("预测工厂信号扫描完成：正式策略 %d，监控策略 %d，刷新会话 %d/建议 %d，特征 %d，新增信号 %d",
+		result.ActiveHypotheses, result.MonitoredHypotheses, result.RefreshedSessions, result.RefreshedDecisions, result.FeatureRows, result.Generated)
 	return nil
 }
 
 func (a *CronTaskApi) executePredictionScanAlerts(ctx context.Context, task *models.CronTask) error {
 	logger.SugaredLogger.Infof("执行预测工厂盘中提醒任务：%s", task.Name)
 	if !isTradingTime() {
-		logger.SugaredLogger.Info("当前不在A股交易时间，跳过预测工厂盘中提醒")
-		return nil
+		return skipTask("当前不在A股竞价交易时段")
 	}
 
 	params := struct {
@@ -575,14 +679,34 @@ func (a *CronTaskApi) executePredictionScanAlerts(ctx context.Context, task *mod
 	if err != nil {
 		return err
 	}
-	logger.SugaredLogger.Infof("预测工厂盘中提醒扫描完成：扫描 %d，触发 %d，新增 %d，通知 %d，解除 %d",
-		result.Scanned, result.Generated, len(result.Alerts), result.Sent, result.Resolved)
+	logger.SugaredLogger.Infof("预测工厂盘中提醒扫描完成：扫描 %d，行情无效 %d，触发 %d，新增 %d，通知 %d，解除 %d",
+		result.Scanned, result.Stale, result.Generated, len(result.Alerts), result.Sent, result.Resolved)
+	if result.Scanned == 0 {
+		return skipTask("没有正式或观察中的监控策略")
+	}
+	if result.Scanned > 0 && result.Stale == result.Scanned {
+		return partialTask("全部监控标的缺少当日三分钟内的新鲜行情，未进行阈值判断")
+	}
 	return nil
 }
 
 func (a *CronTaskApi) executePredictionValidateSignals(ctx context.Context, task *models.CronTask) error {
 	logger.SugaredLogger.Infof("执行预测工厂验证信号任务：%s", task.Name)
-	backtest.NewPredictionService().DailyValidateSignals()
+	if !isATradingDay(time.Now()) {
+		return skipTask("当前不是A股交易日")
+	}
+	result, err := backtest.NewPredictionService().DailyValidateSignals()
+	if err != nil {
+		return err
+	}
+	if result.Pending == 0 {
+		return skipTask("没有待验证信号")
+	}
+	if result.Entered+result.Missed+result.Validated == 0 {
+		return skipTask(fmt.Sprintf("%d 条信号仍等待后续交易日数据", result.Waiting))
+	}
+	logger.SugaredLogger.Infof("预测工厂信号验证完成：待处理 %d，入场 %d，错过 %d，验证 %d，等待 %d",
+		result.Pending, result.Entered, result.Missed, result.Validated, result.Waiting)
 	return nil
 }
 
@@ -642,16 +766,18 @@ func (a *CronTaskApi) executeStockChangeSave(ctx context.Context, task *models.C
 }
 
 func isTradingTime() bool {
-	now := time.Now()
-	weekday := now.Weekday()
-	if weekday == time.Saturday || weekday == time.Sunday {
+	now := time.Now().In(shanghaiLocation)
+	if !isATradingDay(now) {
 		return false
 	}
+	return isATradingSessionClock(now)
+}
 
+func isATradingSessionClock(now time.Time) bool {
 	hour, minute := now.Hour(), now.Minute()
 	currentTime := hour*100 + minute
 
-	morningStart := 915
+	morningStart := 930
 	morningEnd := 1130
 	afternoonStart := 1300
 	afternoonEnd := 1500
@@ -660,4 +786,39 @@ func isTradingTime() bool {
 	isAfternoon := currentTime >= afternoonStart && currentTime <= afternoonEnd
 
 	return isMorning || isAfternoon
+}
+
+func isATradingDay(at time.Time) bool {
+	local := at.In(shanghaiLocation)
+	if local.Weekday() == time.Saturday || local.Weekday() == time.Sunday {
+		return false
+	}
+	date := local.Format("2006-01-02")
+	if cached, ok := aTradingDayCache.Load(date); ok {
+		value := cached.(tradingDayCacheValue)
+		if time.Now().Before(value.expires) {
+			return value.trading
+		}
+		aTradingDayCache.Delete(date)
+	}
+
+	type holidayResponse struct {
+		Code    int `json:"code"`
+		Holiday struct {
+			Holiday bool `json:"holiday"`
+		} `json:"holiday"`
+	}
+	var response holidayResponse
+	resp, err := data.SharedHTTPClient.R().SetResult(&response).
+		Get(fmt.Sprintf("https://timor.tech/api/holiday/info/%s", date))
+	if err == nil && resp.StatusCode() == 200 && response.Code == 0 {
+		trading := !response.Holiday.Holiday
+		aTradingDayCache.Store(date, tradingDayCacheValue{trading: trading, expires: time.Now().Add(24 * time.Hour)})
+		return trading
+	}
+
+	// Calendar service failure must not block a real trading day. Downstream
+	// feature-date and realtime-quote freshness gates still prevent stale work.
+	aTradingDayCache.Store(date, tradingDayCacheValue{trading: true, expires: time.Now().Add(10 * time.Minute)})
+	return true
 }

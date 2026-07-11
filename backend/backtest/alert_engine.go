@@ -1,7 +1,6 @@
 package backtest
 
 import (
-	"encoding/json"
 	"fmt"
 	"go-stock/backend/models"
 	"strings"
@@ -77,7 +76,7 @@ func (e *AlertEngine) EvaluateDecisionForScene(decision models.PredictionDecisio
 		))
 	}
 
-	if decision.HoldingVolume > 0 && decision.TakeProfitPrice > 0 && decision.CurrentPrice >= decision.TakeProfitPrice && (decision.Action == "REDUCE" || decision.Action == "SELL") {
+	if decision.HoldingVolume > 0 && decision.TakeProfitPrice > 0 && decision.CurrentPrice >= decision.TakeProfitPrice {
 		action := sceneAlertAction(scene, "take_profit")
 		alerts = append(alerts, base(
 			"take_profit", "medium", "AI预测工厂止盈/减仓提醒",
@@ -86,7 +85,7 @@ func (e *AlertEngine) EvaluateDecisionForScene(decision models.PredictionDecisio
 		))
 	}
 
-	if decision.HoldingVolume == 0 && (decision.Action == "BUY" || decision.Action == "ADD") &&
+	if eligibleForEntryAlert(decision, monitorMode) &&
 		decision.CurrentPrice > 0 && decision.CurrentPrice >= decision.BuyPriceMin && decision.CurrentPrice <= decision.BuyPriceMax {
 		alerts = append(alerts, base(
 			"entry_signal", "low", "AI预测工厂入场提醒",
@@ -95,14 +94,6 @@ func (e *AlertEngine) EvaluateDecisionForScene(decision models.PredictionDecisio
 		))
 	}
 
-	if decision.HoldingVolume > 0 && hasStrongCapitalOutflow(decision.CapitalFlowJSON) {
-		action := sceneAlertAction(scene, "capital_outflow")
-		alerts = append(alerts, base(
-			"capital_outflow", "medium", "AI预测工厂资金流风险提醒",
-			fmt.Sprintf("%s 出现主力资金代理强流出信号，建议降低追涨和加仓优先级。", name),
-			action, 0,
-		))
-	}
 	return alerts
 }
 
@@ -121,6 +112,10 @@ func (e *AlertEngine) EvaluateAdviceChange(decision models.PredictionDecision, s
 		level = "high"
 	} else if currentAction == "BUY" || currentAction == "ADD" {
 		level = "low"
+	}
+	if monitorMode == "watch" {
+		level = "low"
+		currentAction = "WATCH"
 	}
 	return []PredictionAlert{{
 		Key:             fmt.Sprintf("prediction:%d:%s:advice_change", decision.SessionID, strings.ToLower(decision.StockCode)),
@@ -182,15 +177,12 @@ func normalizeAlertLevel(level string) string {
 	}
 }
 
-func hasStrongCapitalOutflow(raw string) bool {
-	if strings.TrimSpace(raw) == "" {
-		return false
-	}
-	var flow struct {
-		Level string `json:"level"`
-	}
-	if err := json.Unmarshal([]byte(raw), &flow); err != nil {
-		return false
-	}
-	return flow.Level == "strong_outflow"
+func eligibleForEntryAlert(decision models.PredictionDecision, monitorMode string) bool {
+	return monitorMode == "active" &&
+		decision.HoldingVolume == 0 &&
+		decision.Action == "BUY" &&
+		!decision.SampleWarning &&
+		decision.QualityRating == "reference" &&
+		decision.Confidence != "low" &&
+		decision.RiskLevel != "high"
 }

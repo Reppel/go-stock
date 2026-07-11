@@ -172,6 +172,10 @@ type FollowedStock struct {
 	ChangePercent      float64
 	AlarmChangePercent float64
 	AlarmPrice         float64
+	AlarmPriceMode     string
+	AlarmBasisDate     string
+	AlarmBasisPrice    float64
+	AlarmAdjustedAt    *time.Time
 	Time               time.Time
 	Sort               int64
 	Cron               *string
@@ -544,7 +548,8 @@ func (receiver StockDataApi) Follow(stockCode string) string {
 		PriceChange:        0,
 		Sort:               maxSort + 1,
 		AlarmChangePercent: 3,
-		AlarmPrice:         price + 1,
+		AlarmPrice:         0,
+		AlarmPriceMode:     AlarmPriceModeDisabled,
 	}, &FollowedStock{StockCode: stockCode})
 	return "关注成功"
 }
@@ -579,9 +584,21 @@ func (receiver StockDataApi) SetAlarmChangePercent(val, alarmPrice float64, stoc
 		stockCode = strings.Replace(stockCode, "gb_", "us", 1)
 		stockCode = strings.Replace(stockCode, "GB_", "us", 1)
 	}
-	err := db.Dao.Model(&FollowedStock{}).Where("stock_code = ?", strings.ToLower(stockCode)).Updates(&map[string]any{
+	lowerStockCode := strings.ToLower(stockCode)
+	mode := AlarmPriceModeDisabled
+	basisDate := ""
+	basisPrice := 0.0
+	if alarmPrice > 0 {
+		mode = AlarmPriceModeFixed
+		basisDate, basisPrice = latestFollowedStockAlarmBasis(lowerStockCode, "")
+	}
+	err := db.Dao.Model(&FollowedStock{}).Where("stock_code = ?", lowerStockCode).Updates(&map[string]any{
 		"alarm_change_percent": val,
 		"alarm_price":          alarmPrice,
+		"alarm_price_mode":     mode,
+		"alarm_basis_date":     basisDate,
+		"alarm_basis_price":    basisPrice,
+		"alarm_adjusted_at":    nil,
 	}).Error
 	if err != nil {
 		logger.SugaredLogger.Error(err.Error())

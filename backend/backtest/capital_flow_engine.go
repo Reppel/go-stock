@@ -27,8 +27,7 @@ func (e *CapitalFlowEngine) GetStockFlow(stockCode string, date string, f models
 	}
 
 	var flow models.StockMoneyFlowDaily
-	err := db.Dao.Where("stock_code IN ? AND trade_date <= ?", stockCodeVariants(stockCode), date).
-		Order("trade_date desc").
+	err := db.Dao.Where("stock_code IN ? AND trade_date = ?", stockCodeVariants(stockCode), date).
 		First(&flow).Error
 	if err == nil {
 		signal.TradeDate = flow.TradeDate
@@ -216,17 +215,16 @@ func latestNamedSectorNet(sectorType string, names []string, date string) (float
 		return 0, "unknown"
 	}
 	filtered = uniqueStrings(filtered)
-	latestQuery := db.Dao.Model(&models.SectorFlowDaily{}).
-		Where("sector_type = ? AND sector_name IN ?", sectorType, filtered)
-	if date != "" {
-		latestQuery = latestQuery.Where("trade_date <= ?", date)
-	}
-	var latestDate string
-	if latestQuery.Select("COALESCE(MAX(trade_date), '')").Scan(&latestDate).Error != nil || latestDate == "" {
-		return 0, "unknown"
+	tradeDate := strings.TrimSpace(date)
+	if tradeDate == "" {
+		if db.Dao.Model(&models.SectorFlowDaily{}).
+			Where("sector_type = ? AND sector_name IN ?", sectorType, filtered).
+			Select("COALESCE(MAX(trade_date), '')").Scan(&tradeDate).Error != nil || tradeDate == "" {
+			return 0, "unknown"
+		}
 	}
 	var rows []models.SectorFlowDaily
-	if db.Dao.Where("sector_type = ? AND sector_name IN ? AND trade_date = ?", sectorType, filtered, latestDate).
+	if db.Dao.Where("sector_type = ? AND sector_name IN ? AND trade_date = ?", sectorType, filtered, tradeDate).
 		Find(&rows).Error != nil || len(rows) == 0 {
 		return 0, "unknown"
 	}

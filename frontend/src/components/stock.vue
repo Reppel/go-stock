@@ -2084,11 +2084,9 @@ function updateCostPriceAndVolumeNew(code, price, volume, alarm, formModel) {
     })
   }
 
-  if (alarm || formModel.alarmPrice) {
-    SetAlarmChangePercent(alarm, formModel.alarmPrice, code).then(result => {
-      //message.success(result)
-    })
-  }
+  SetAlarmChangePercent(alarm || 0, formModel.alarmPrice || 0, code).then(result => {
+    //message.success(result)
+  })
   
   // 保存交易价格（开仓价、止盈价、止损价、成本价）
   if (formModel.entryPrice || formModel.takeProfitPrice || formModel.stopLossPrice || formModel.costPrice) {
@@ -2982,8 +2980,6 @@ watch(modalShow6, (newVal) => {
     <n-form :model="formModel" :rules="{
               costPrice: { required: true, message: '请输入成本'},
               volume: { required: true, message: '请输入数量'},
-              alarm:{required: true, message: '涨跌报警值'} ,
-              alarmPrice: { required: true, message: '请输入报警价格'},
               sort: { required: true, message: '请输入排序值'},
             }" label-placement="left" label-width="100px">
       <n-grid :cols="2" :x-gap="12">
@@ -3015,8 +3011,8 @@ watch(modalShow6, (newVal) => {
           </n-form-item>
         </n-gi>
         <n-gi>
-          <n-form-item label="股价提醒" path="alarmPrice">
-            <n-input-number v-model:value="formModel.alarmPrice" min="0" placeholder="股价报警值" style="width: 100%">
+          <n-form-item label="固定价提醒" path="alarmPrice">
+            <n-input-number v-model:value="formModel.alarmPrice" min="0" placeholder="0 表示关闭" style="width: 100%">
               <template #suffix>
                 {{ formModel.code.indexOf("hk") >= 0 ? "HK$" : "¥" }}
               </template>

@@ -19,7 +19,8 @@ import (
 
 // FeatureSyncService 特征数据同步服务
 type FeatureSyncService struct {
-	klineApi *data.EastMoneyKLineApi
+	klineApi              *data.EastMoneyKLineApi
+	syncSupplementalFlows bool
 }
 
 var activeFeatureSyncJobs sync.Map
@@ -34,8 +35,16 @@ type featureSyncOutcome struct {
 // NewFeatureSyncService 创建特征同步服务
 func NewFeatureSyncService() *FeatureSyncService {
 	return &FeatureSyncService{
-		klineApi: data.NewEastMoneyKLineApi(data.GetSettingConfig()),
+		klineApi:              data.NewEastMoneyKLineApi(data.GetSettingConfig()),
+		syncSupplementalFlows: true,
 	}
+}
+
+// TechnicalOnly keeps the scheduled feature stage focused on adjusted bars and
+// technical factors. The dedicated money-flow stage runs afterwards.
+func (s *FeatureSyncService) TechnicalOnly() *FeatureSyncService {
+	s.syncSupplementalFlows = false
+	return s
 }
 
 // SyncStockFeatures 同步指定股票的特征数据
@@ -105,10 +114,12 @@ func (s *FeatureSyncService) SyncStockFeatures(stockCode string, days int) error
 			stockCode, startDate, endDate, expectedRows, persistedRows)
 	}
 
-	if rows, macRows, err := s.SyncStockMoneyFlow(stockCode, days); err != nil {
-		logger.SugaredLogger.Warnf("sync money flow for %s error: %v", stockCode, err)
-	} else if rows > 0 || macRows > 0 {
-		logger.SugaredLogger.Infof("synced money flow for %s: eastmoney=%d mac=%d", stockCode, rows, macRows)
+	if s.syncSupplementalFlows {
+		if rows, macRows, err := s.SyncStockMoneyFlow(stockCode, days); err != nil {
+			logger.SugaredLogger.Warnf("sync money flow for %s error: %v", stockCode, err)
+		} else if rows > 0 || macRows > 0 {
+			logger.SugaredLogger.Infof("synced money flow for %s: eastmoney=%d mac=%d", stockCode, rows, macRows)
+		}
 	}
 	logger.SugaredLogger.Infof("synced features for %s: source=%s klines=%d features=%d", stockCode, source, len(klineData), writtenRows)
 
@@ -149,7 +160,7 @@ func completedFeatureKLines(klines []data.KLineData, now time.Time) []data.KLine
 
 func featureDataAsOf(day string) time.Time {
 	location := time.FixedZone("Asia/Shanghai", 8*60*60)
-	parsed, err := time.ParseInLocation("2006-01-02 15:04", strings.TrimSpace(day)+" 15:05", location)
+	parsed, err := time.ParseInLocation("2006-01-02 15:04", strings.TrimSpace(day)+" 15:10", location)
 	if err != nil {
 		return time.Time{}
 	}
@@ -350,8 +361,15 @@ func (s *FeatureSyncService) SyncAllStockFeaturesWithJob(stockCodes []string, da
 		}
 	}
 
-	sectorRows, conceptRows := SyncSectorMoneyFlows()
-	logger.SugaredLogger.Infof("synced prediction sector money flows: industry=%d concept=%d", sectorRows, conceptRows)
+	if s.syncSupplementalFlows {
+		sectorRows, conceptRows := SyncSectorMoneyFlows()
+		logger.SugaredLogger.Infof("synced prediction sector money flows: industry=%d concept=%d", sectorRows, conceptRows)
+	}
+	if result, err := data.RebaseFollowedStockPriceAlerts(stockCodes); err != nil {
+		logger.SugaredLogger.Warnf("rebase followed stock price alerts error: %v", err)
+	} else if result.Rebased > 0 || result.Initialized > 0 {
+		logger.SugaredLogger.Infof("rebased followed stock price alerts: rebased=%d initialized=%d", result.Rebased, result.Initialized)
+	}
 
 	now := time.Now()
 	coverage := s.GetFeatureCoverageForScopeByDates("", "", "")

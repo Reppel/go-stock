@@ -16,14 +16,18 @@ import (
 )
 
 type MoneyFlowSyncResult struct {
-	StockCount      int `json:"stockCount"`
-	FlowRows        int `json:"flowRows"`
-	SectorRows      int `json:"sectorRows"`
-	ConceptRows     int `json:"conceptRows"`
-	MacRows         int `json:"macRows"`
-	FailedStocks    int `json:"failedStocks"`
-	PartialStocks   int `json:"partialStocks"`
-	HistoricalIssue int `json:"historicalIssue"`
+	StockCount       int    `json:"stockCount"`
+	FlowRows         int    `json:"flowRows"`
+	SectorRows       int    `json:"sectorRows"`
+	ConceptRows      int    `json:"conceptRows"`
+	MacRows          int    `json:"macRows"`
+	FailedStocks     int    `json:"failedStocks"`
+	PartialStocks    int    `json:"partialStocks"`
+	HistoricalIssue  int    `json:"historicalIssue"`
+	FreshStocks      int    `json:"freshStocks"`
+	LatestTradeDate  string `json:"latestTradeDate"`
+	SectorTradeDate  string `json:"sectorTradeDate"`
+	ConceptTradeDate string `json:"conceptTradeDate"`
 }
 
 func (s *FeatureSyncService) SyncMoneyFlows(stockCodes []string, days int) (*MoneyFlowSyncResult, error) {
@@ -34,11 +38,18 @@ func (s *FeatureSyncService) SyncMoneyFlows(stockCodes []string, days int) (*Mon
 	if days <= 0 {
 		days = 365
 	}
-	if len(stockCodes) == 0 {
+	normalizedCodes := make([]string, 0, len(stockCodes))
+	for _, code := range uniqueStrings(stockCodes) {
+		if normalized := normalizeMoneyFlowStockCode(code); normalized != "" {
+			normalizedCodes = append(normalizedCodes, normalized)
+		}
+	}
+	normalizedCodes = uniqueStrings(normalizedCodes)
+	if len(normalizedCodes) == 0 {
 		return result, nil
 	}
 
-	for _, code := range uniqueStrings(stockCodes) {
+	for _, code := range normalizedCodes {
 		rows, macRows, err := s.SyncStockMoneyFlow(code, days)
 		if err != nil {
 			if macRows > 0 {
@@ -60,6 +71,29 @@ func (s *FeatureSyncService) SyncMoneyFlows(stockCodes []string, days int) (*Mon
 	sectorRows, conceptRows := SyncSectorMoneyFlows()
 	result.SectorRows = sectorRows
 	result.ConceptRows = conceptRows
+	today := time.Now().In(time.FixedZone("Asia/Shanghai", 8*60*60)).Format("2006-01-02")
+	if err := db.Dao.Model(&models.StockMoneyFlowDaily{}).
+		Where("stock_code IN ?", normalizedCodes).
+		Select("COALESCE(MAX(trade_date), '')").Scan(&result.LatestTradeDate).Error; err != nil {
+		return result, fmt.Errorf("query latest stock money-flow date: %w", err)
+	}
+	var freshStocks int64
+	if err := db.Dao.Model(&models.StockMoneyFlowDaily{}).
+		Where("stock_code IN ? AND trade_date = ?", normalizedCodes, today).
+		Distinct("stock_code").Count(&freshStocks).Error; err != nil {
+		return result, fmt.Errorf("count fresh stock money flow: %w", err)
+	}
+	result.FreshStocks = int(freshStocks)
+	if err := db.Dao.Model(&models.SectorFlowDaily{}).
+		Where("sector_type = ?", "industry").
+		Select("COALESCE(MAX(trade_date), '')").Scan(&result.SectorTradeDate).Error; err != nil {
+		return result, fmt.Errorf("query latest industry money-flow date: %w", err)
+	}
+	if err := db.Dao.Model(&models.SectorFlowDaily{}).
+		Where("sector_type = ?", "concept").
+		Select("COALESCE(MAX(trade_date), '')").Scan(&result.ConceptTradeDate).Error; err != nil {
+		return result, fmt.Errorf("query latest concept money-flow date: %w", err)
+	}
 	return result, nil
 }
 
@@ -116,11 +150,12 @@ func (s *FeatureSyncService) SyncStockMoneyFlow(stockCode string, days int) (int
 			RetailNetInflow1:   parseMoneyFlowFloat(row.F84),
 			Source:             "eastmoney",
 		}
-		if err := upsertStockMoneyFlow(flow); err != nil {
+		stored, err := upsertStockMoneyFlow(flow)
+		if err != nil {
 			logger.SugaredLogger.Warnf("upsert stock money flow %s %s error: %v", code, tradeDate, err)
 			continue
 		}
-		updateFeatureFundFlow(code, tradeDate, flow.MainNetInflow5, flow.MainNetInflow20)
+		updateFeatureFundFlow(code, tradeDate, stored.MainNetInflow5, stored.MainNetInflow20)
 		saved++
 	}
 	macRows := syncMACMoneyFlow(code)
@@ -186,11 +221,17 @@ func syncMACMoneyFlow(stockCode string) int {
 		return 0
 	}
 	code := normalizeMoneyFlowStockCode(stockCode)
-	today := time.Now().Format("2006-01-02")
+	var tradeDate string
+	db.Dao.Model(&models.StockFeature{}).
+		Where("stock_code IN ? AND feature_version = ? AND adjusted = ?", stockCodeVariants(code), CurrentFeatureVersion, true).
+		Select("COALESCE(MAX(date), '')").Scan(&tradeDate)
+	if tradeDate == "" {
+		return 0
+	}
 	flow := models.StockMoneyFlowDaily{
 		StockCode:         code,
-		TradeDate:         today,
-		DataAsOf:          time.Now(),
+		TradeDate:         tradeDate,
+		DataAsOf:          featureDataAsOf(tradeDate),
 		MainNetInflow1:    row.TodayMainNetIn,
 		MainNetInflow5:    row.FiveDayMainNetIn,
 		SuperLargeNet1:    row.FiveDaySuperNet,
@@ -203,25 +244,74 @@ func syncMACMoneyFlow(stockCode string) int {
 		MacRetailNetIn1:   row.TodayRetailNetIn,
 		Source:            "tdx_mac",
 	}
-	if err := upsertStockMoneyFlow(flow); err != nil {
+	stored, err := upsertStockMoneyFlow(flow)
+	if err != nil {
 		logger.SugaredLogger.Warnf("upsert mac money flow %s error: %v", code, err)
 		return 0
 	}
-	updateFeatureFundFlow(code, today, flow.MainNetInflow5, flow.MainNetInflow20)
+	updateFeatureFundFlow(code, tradeDate, stored.MainNetInflow5, stored.MainNetInflow20)
 	return 1
 }
 
-func upsertStockMoneyFlow(flow models.StockMoneyFlowDaily) error {
+func upsertStockMoneyFlow(flow models.StockMoneyFlowDaily) (models.StockMoneyFlowDaily, error) {
 	var existing models.StockMoneyFlowDaily
 	err := db.Dao.Where("stock_code = ? AND trade_date = ?", flow.StockCode, flow.TradeDate).First(&existing).Error
 	if err == nil {
-		flow.ID = existing.ID
-		return db.Dao.Save(&flow).Error
+		flow = mergeStockMoneyFlow(existing, flow)
+		return flow, db.Dao.Save(&flow).Error
 	}
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return err
+		return flow, err
 	}
-	return db.Dao.Create(&flow).Error
+	return flow, db.Dao.Create(&flow).Error
+}
+
+func mergeStockMoneyFlow(existing, incoming models.StockMoneyFlowDaily) models.StockMoneyFlowDaily {
+	incoming.ID = existing.ID
+	if existing.DataAsOf.After(incoming.DataAsOf) {
+		incoming.DataAsOf = existing.DataAsOf
+	}
+
+	switch incoming.Source {
+	case "tdx_mac":
+		if existing.Source == "" || existing.Source == "tdx_mac" {
+			return incoming
+		}
+		existing.DataAsOf = incoming.DataAsOf
+		existing.MacMainNetInflow1 = incoming.MacMainNetInflow1
+		existing.MacMainNetInflow5 = incoming.MacMainNetInflow5
+		existing.MacRetailNetIn1 = incoming.MacRetailNetIn1
+		existing.Source = mergeMoneyFlowSources(existing.Source, incoming.Source)
+		return existing
+	case "eastmoney":
+		incoming.MacMainNetInflow1 = existing.MacMainNetInflow1
+		incoming.MacMainNetInflow5 = existing.MacMainNetInflow5
+		incoming.MacRetailNetIn1 = existing.MacRetailNetIn1
+		incoming.NorthboundNetIn = existing.NorthboundNetIn
+		incoming.SectorNetInflow = existing.SectorNetInflow
+		incoming.ConceptNetInflow = existing.ConceptNetInflow
+		incoming.Source = mergeMoneyFlowSources(incoming.Source, existing.Source)
+	}
+	return incoming
+}
+
+func mergeMoneyFlowSources(sources ...string) string {
+	seen := make(map[string]struct{}, len(sources))
+	merged := make([]string, 0, len(sources))
+	for _, source := range sources {
+		for _, item := range strings.Split(source, "+") {
+			item = strings.TrimSpace(item)
+			if item == "" {
+				continue
+			}
+			if _, ok := seen[item]; ok {
+				continue
+			}
+			seen[item] = struct{}{}
+			merged = append(merged, item)
+		}
+	}
+	return strings.Join(merged, "+")
 }
 
 func upsertSectorFlow(flow models.SectorFlowDaily) error {

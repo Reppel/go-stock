@@ -670,6 +670,11 @@ export namespace data {
 	    ChangePercent: number;
 	    AlarmChangePercent: number;
 	    AlarmPrice: number;
+	    AlarmPriceMode: string;
+	    AlarmBasisDate: string;
+	    AlarmBasisPrice: number;
+	    // Go type: time
+	    AlarmAdjustedAt?: any;
 	    // Go type: time
 	    Time: any;
 	    Sort: number;
@@ -696,6 +701,10 @@ export namespace data {
 	        this.ChangePercent = source["ChangePercent"];
 	        this.AlarmChangePercent = source["AlarmChangePercent"];
 	        this.AlarmPrice = source["AlarmPrice"];
+	        this.AlarmPriceMode = source["AlarmPriceMode"];
+	        this.AlarmBasisDate = source["AlarmBasisDate"];
+	        this.AlarmBasisPrice = source["AlarmBasisPrice"];
+	        this.AlarmAdjustedAt = this.convertValues(source["AlarmAdjustedAt"], null);
 	        this.Time = this.convertValues(source["Time"], null);
 	        this.Sort = source["Sort"];
 	        this.Cron = source["Cron"];
@@ -2931,6 +2940,7 @@ export namespace models {
 	    stockName: string;
 	    decisionDate: string;
 	    action: string;
+	    previousAction: string;
 	    actionText: string;
 	    positionAdvice: string;
 	    quantityPercent: number;
@@ -2984,6 +2994,7 @@ export namespace models {
 	        this.stockName = source["stockName"];
 	        this.decisionDate = source["decisionDate"];
 	        this.action = source["action"];
+	        this.previousAction = source["previousAction"];
 	        this.actionText = source["actionText"];
 	        this.positionAdvice = source["positionAdvice"];
 	        this.quantityPercent = source["quantityPercent"];

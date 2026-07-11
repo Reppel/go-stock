@@ -316,6 +316,11 @@ func AutoMigrate() {
 	db.Dao.AutoMigrate(&models.SectorFlowDaily{})
 	db.Dao.AutoMigrate(&models.StockEventDaily{})
 	db.Dao.AutoMigrate(&models.StockRiskEvent{})
+	if result, err := data.NormalizeFollowedStockAlertMetadata(); err != nil {
+		log.SugaredLogger.Errorf("初始化自选股价格提醒口径失败: %v", err)
+	} else if result.Initialized > 0 || result.DisabledLegacy > 0 {
+		log.SugaredLogger.Infof("自选股价格提醒口径初始化完成: 初始化=%d 关闭旧默认值=%d", result.Initialized, result.DisabledLegacy)
+	}
 
 	//updateMultipleModel()
 

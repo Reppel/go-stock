@@ -64,6 +64,18 @@ func TestMonitorReadinessRequiresBenchmarkAndCurrentVersions(t *testing.T) {
 	}
 }
 
+func TestRuleValidationRejectsIndicatorUnitMismatch(t *testing.T) {
+	rule := Rule{
+		EntryConditions: []Condition{{Indicator: "KDJ_K", Operator: "cross_up", Ref: "MA5"}},
+		ExitConditions:  []Condition{{Indicator: "Close", Operator: "<", Ref: "MA10"}},
+		StopLoss:        0.07, StopGain: 0.12, MaxHoldDays: 5, MaxHoldings: 5,
+	}
+	errs := ValidateHypothesisRule(rule)
+	if len(errs) == 0 {
+		t.Fatal("KDJ oscillator must not be compared with a price moving average")
+	}
+}
+
 func formatSyntheticDate(index int) string {
 	return fmt.Sprintf("2026-%02d-%02d", index/28+1, index%28+1)
 }

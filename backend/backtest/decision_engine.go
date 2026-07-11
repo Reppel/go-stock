@@ -278,6 +278,7 @@ func (e *DecisionEngine) Build(ctx DecisionContext) models.PredictionDecision {
 		StockName:             stockName,
 		DecisionDate:          f.Date,
 		Action:                action,
+		PreviousAction:        strings.ToUpper(strings.TrimSpace(ctx.PreviousAction)),
 		ActionText:            actionText(action),
 		PositionAdvice:        positionAdvice,
 		QuantityPercent:       quantityPercent,

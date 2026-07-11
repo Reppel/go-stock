@@ -72,32 +72,32 @@ func loadDecisionDataStatus(session *models.PredictionSession, feature models.St
 		return status
 	}
 
-	featureQuery := db.Dao.Model(&models.StockFeature{}).
-		Where("stock_code IN ? AND date >= ? AND date <= ? AND feature_version = ?", stockCodeVariants(feature.StockCode), session.StartDate, session.EndDate, CurrentFeatureVersion)
-	featureQuery.Count(&status.FeatureRows)
+	featureWhere := "stock_code IN ? AND date >= ? AND date <= ? AND feature_version = ?"
+	featureArgs := []any{stockCodeVariants(feature.StockCode), session.StartDate, session.EndDate, CurrentFeatureVersion}
+	db.Dao.Model(&models.StockFeature{}).Where(featureWhere, featureArgs...).Count(&status.FeatureRows)
 	var first models.StockFeature
-	if featureQuery.Order("date asc").First(&first).Error == nil {
+	if db.Dao.Where(featureWhere, featureArgs...).Order("date asc").First(&first).Error == nil {
 		status.FeatureStartDate = first.Date
 	}
 	var last models.StockFeature
-	if featureQuery.Order("date desc").First(&last).Error == nil {
+	if db.Dao.Where(featureWhere, featureArgs...).Order("date desc").First(&last).Error == nil {
 		status.FeatureEndDate = last.Date
 	}
 	if status.FeatureRows > 0 {
 		var unadjusted int64
-		featureQuery.Where("adjusted = ?", false).Count(&unadjusted)
+		db.Dao.Model(&models.StockFeature{}).Where(featureWhere, featureArgs...).Where("adjusted = ?", false).Count(&unadjusted)
 		status.FeatureAdjusted = unadjusted == 0
 	}
 
-	flowQuery := db.Dao.Model(&models.StockMoneyFlowDaily{}).
-		Where("stock_code IN ? AND trade_date >= ? AND trade_date <= ?", stockCodeVariants(feature.StockCode), session.StartDate, session.EndDate)
-	flowQuery.Count(&status.MoneyFlowRows)
+	flowWhere := "stock_code IN ? AND trade_date >= ? AND trade_date <= ?"
+	flowArgs := []any{stockCodeVariants(feature.StockCode), session.StartDate, session.EndDate}
+	db.Dao.Model(&models.StockMoneyFlowDaily{}).Where(flowWhere, flowArgs...).Count(&status.MoneyFlowRows)
 	var firstFlow models.StockMoneyFlowDaily
-	if flowQuery.Order("trade_date asc").First(&firstFlow).Error == nil {
+	if db.Dao.Where(flowWhere, flowArgs...).Order("trade_date asc").First(&firstFlow).Error == nil {
 		status.MoneyFlowStartDate = firstFlow.TradeDate
 	}
 	var lastFlow models.StockMoneyFlowDaily
-	if flowQuery.Order("trade_date desc").First(&lastFlow).Error == nil {
+	if db.Dao.Where(flowWhere, flowArgs...).Order("trade_date desc").First(&lastFlow).Error == nil {
 		status.MoneyFlowEndDate = lastFlow.TradeDate
 	}
 	status.MoneyFlowReady = status.MoneyFlowRows >= 20

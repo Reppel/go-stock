@@ -66,6 +66,7 @@ type PredictionDecision struct {
 	StockName             string    `json:"stockName" gorm:"size:50" md:"股票名称"`
 	DecisionDate          string    `json:"decisionDate" gorm:"size:10;index" md:"决策日期"`
 	Action                string    `json:"action" gorm:"size:20;index" md:"建议动作"` // BUY/ADD/HOLD/REDUCE/SELL/WATCH/AVOID
+	PreviousAction        string    `json:"previousAction" gorm:"size:20" md:"上次建议动作"`
 	ActionText            string    `json:"actionText" gorm:"size:30" md:"建议动作文本"`
 	PositionAdvice        string    `json:"positionAdvice" gorm:"size:100" md:"仓位建议"`
 	QuantityPercent       float64   `json:"quantityPercent" md:"建议仓位比例"`

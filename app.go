@@ -60,7 +60,10 @@ type App struct {
 func NewApp() *App {
 	cacheSize := 512 * 1024
 	cache := freecache.NewCache(cacheSize)
-	c := cron.New(cron.WithSeconds(), cron.WithChain(cron.Recover(cron.DefaultLogger)))
+	c := cron.New(cron.WithSeconds(), cron.WithChain(
+		cron.SkipIfStillRunning(cron.DefaultLogger),
+		cron.Recover(cron.DefaultLogger),
+	))
 	c.Start()
 	var tools []data.Tool
 	tools = data.Tools(tools)
@@ -3034,25 +3037,25 @@ func (a *App) initPredictionCronTasks(cronApi *agent.CronTaskApi) {
 			TaskType:    "prediction_sync_features",
 			Enable:      true,
 			Status:      "active",
-			Description: "工作日收盘后同步前复权技术特征，供随后信号扫描使用",
+			Description: "A股交易日 15:10 同步已收盘的前复权技术特征，不重复抓取资金流",
 			Params:      `{"stockScope":"自选股","days":365}`,
 		},
 		{
-			Name:        "预测工厂-扫描信号",
-			CronExpr:    "0 30 15 * * 1-5",
-			TaskType:    "prediction_scan_signals",
-			Enable:      true,
-			Status:      "active",
-			Description: "工作日 15:30 扫描 AI 预测工厂预测信号",
-		},
-		{
 			Name:        "预测工厂-同步资金流",
-			CronExpr:    "0 5 15 * * 1-5",
+			CronExpr:    "0 20 15 * * 1-5",
 			TaskType:    "prediction_sync_money_flow",
 			Enable:      true,
 			Status:      "active",
-			Description: "工作日 15:05 同步个股、行业、概念资金流因子",
+			Description: "A股交易日 15:20 同步个股、行业、概念收盘资金流，并回写当日特征",
 			Params:      `{"stockScope":"自选股","days":120}`,
+		},
+		{
+			Name:        "预测工厂-扫描信号",
+			CronExpr:    "0 35 15 * * 1-5",
+			TaskType:    "prediction_scan_signals",
+			Enable:      true,
+			Status:      "active",
+			Description: "A股交易日 15:35 刷新监控策略操作建议，并在当日特征就绪后扫描正式入场信号",
 		},
 		{
 			Name:        "预测工厂-盘中提醒",
@@ -3060,7 +3063,7 @@ func (a *App) initPredictionCronTasks(cronApi *agent.CronTaskApi) {
 			TaskType:    "prediction_scan_alerts",
 			Enable:      true,
 			Status:      "active",
-			Description: "工作日盘中扫描持仓触发价、止损/止盈/减仓和资金流风险提醒",
+			Description: "A股交易日 9:30-11:30、13:00-15:00 使用当日新鲜行情扫描止损、止盈、防守位和正式入场提醒",
 			Params:      `{"sendNotification":true}`,
 		},
 		{
@@ -3069,7 +3072,7 @@ func (a *App) initPredictionCronTasks(cronApi *agent.CronTaskApi) {
 			TaskType:    "prediction_validate_signals",
 			Enable:      true,
 			Status:      "active",
-			Description: "工作日 16:00 验证 AI 预测工厂预测信号",
+			Description: "A股交易日 16:00 在当日特征就绪后推进待入场及到期信号验证",
 		},
 	}
 

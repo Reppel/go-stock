@@ -55,17 +55,17 @@ func GetIndicatorRegistry() []IndicatorDefinition {
 		{Name: "MA10", Label: "10日均线", Source: "stock_feature", Unit: "price"},
 		{Name: "MA20", Label: "20日均线", Source: "stock_feature", Unit: "price"},
 		{Name: "MA60", Label: "60日均线", Source: "stock_feature", Unit: "price"},
-		{Name: "MACD", Label: "MACD", Source: "stock_feature", Unit: "factor"},
-		{Name: "RSI6", Label: "RSI6", Source: "stock_feature", Unit: "factor"},
-		{Name: "RSI12", Label: "RSI12", Source: "stock_feature", Unit: "factor"},
-		{Name: "KDJ_K", Label: "KDJ K", Source: "stock_feature", Unit: "factor"},
+		{Name: "MACD", Label: "MACD", Source: "stock_feature", Unit: "macd"},
+		{Name: "RSI6", Label: "RSI6", Source: "stock_feature", Unit: "oscillator"},
+		{Name: "RSI12", Label: "RSI12", Source: "stock_feature", Unit: "oscillator"},
+		{Name: "KDJ_K", Label: "KDJ K", Source: "stock_feature", Unit: "oscillator"},
 		{Name: "BOLLUpper", Label: "布林上轨", Source: "stock_feature", Unit: "price"},
 		{Name: "BOLLMid", Label: "布林中轨", Source: "stock_feature", Unit: "price"},
 		{Name: "BOLLLower", Label: "布林下轨", Source: "stock_feature", Unit: "price"},
 		{Name: "VolumeRatio", Label: "量比", Source: "stock_feature", Unit: "ratio"},
 		{Name: "ATR", Label: "ATR", Source: "stock_feature", Unit: "price"},
-		{Name: "ChangeRate5", Label: "5日涨跌幅", Source: "stock_feature", Unit: "ratio"},
-		{Name: "ChangeRate20", Label: "20日涨跌幅", Source: "stock_feature", Unit: "ratio"},
+		{Name: "ChangeRate5", Label: "5日涨跌幅", Source: "stock_feature", Unit: "return"},
+		{Name: "ChangeRate20", Label: "20日涨跌幅", Source: "stock_feature", Unit: "return"},
 	}
 }
 
@@ -165,8 +165,10 @@ func RecordGenerationAudit(sessionID uint, source string, raw string, validation
 func validateRule(rule Rule) []ValidationError {
 	var errs []ValidationError
 	allowed := map[string]bool{}
+	definitions := map[string]IndicatorDefinition{}
 	for _, d := range GetIndicatorRegistry() {
 		allowed[d.Name] = true
+		definitions[d.Name] = d
 	}
 	allowedOps := map[string]bool{
 		">": true, ">=": true, "<": true, "<=": true, "==": true, "!=": true,
@@ -184,6 +186,13 @@ func validateRule(rule Rule) []ValidationError {
 		if c.Ref != "" && !allowed[c.Ref] {
 			errs = append(errs, ValidationError{Field: prefix + ".ref", Message: "引用指标不在白名单内：" + c.Ref})
 		}
+		if c.Ref != "" && allowed[c.Indicator] && allowed[c.Ref] && definitions[c.Indicator].Unit != definitions[c.Ref].Unit {
+			errs = append(errs, ValidationError{
+				Field: prefix + ".ref",
+				Message: fmt.Sprintf("指标量纲不一致：%s(%s) 不能与 %s(%s) 直接比较",
+					c.Indicator, definitions[c.Indicator].Unit, c.Ref, definitions[c.Ref].Unit),
+			})
+		}
 		if !allowedOps[c.Operator] {
 			errs = append(errs, ValidationError{Field: prefix + ".operator", Message: "操作符不支持：" + c.Operator})
 		}
@@ -197,10 +206,10 @@ func validateRule(rule Rule) []ValidationError {
 	if rule.StopGain < 0.03 || rule.StopGain > 0.25 {
 		errs = append(errs, ValidationError{Field: "stopGain", Message: "止盈范围应在 0.03 - 0.25"})
 	}
-	if rule.MaxHoldDays < 0 || rule.MaxHoldDays > 30 {
+	if rule.MaxHoldDays < 1 || rule.MaxHoldDays > 30 {
 		errs = append(errs, ValidationError{Field: "maxHoldDays", Message: "持有周期应在 1 - 30 个交易日"})
 	}
-	if rule.MaxHoldings < 0 || rule.MaxHoldings > 20 {
+	if rule.MaxHoldings < 1 || rule.MaxHoldings > 20 {
 		errs = append(errs, ValidationError{Field: "maxHoldings", Message: "最大持仓数应在 1 - 20"})
 	}
 	return errs

@@ -14,13 +14,18 @@ import (
 	"gorm.io/gorm"
 )
 
-const predictionAlertLookbackDays = 14
+const (
+	predictionAlertLookbackDays = 14
+	predictionAlertCooldown     = 30 * time.Minute
+	predictionQuoteMaxAge       = 3 * time.Minute
+)
 
 type PredictionAlertScanResult struct {
 	Scanned   int                         `json:"scanned"`
 	Generated int                         `json:"generated"`
 	Sent      int                         `json:"sent"`
 	Resolved  int                         `json:"resolved"`
+	Stale     int                         `json:"stale"`
 	Alerts    []models.PredictionAlertLog `json:"alerts"`
 }
 
@@ -49,7 +54,7 @@ func (s *PredictionAlertService) ScanRealtimeAlerts(sendNotification bool) (*Pre
 	decisions := s.latestMonitoredDecisionsByStock(500)
 	result := &PredictionAlertScanResult{Scanned: len(decisions)}
 	if len(decisions) == 0 {
-		resolved, err := s.resolveInactiveLogs(map[string]struct{}{})
+		resolved, err := s.resolveInactiveLogs(map[string]struct{}{}, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -58,23 +63,35 @@ func (s *PredictionAlertService) ScanRealtimeAlerts(sendNotification bool) (*Pre
 	}
 
 	quotes := s.refreshRealtimeQuotes(decisions)
+	codes := make([]string, 0, len(decisions))
+	for _, monitored := range decisions {
+		codes = append(codes, monitored.decision.StockCode)
+	}
+	holdings := holdingMap(codes)
 	now := time.Now()
 	activeKeys := make(map[string]struct{})
+	evaluatedCodes := make(map[string]struct{})
 	created := make([]models.PredictionAlertLog, 0)
 
 	for _, monitored := range decisions {
 		decision := monitored.decision
-		if quote, ok := quotes[normalizeAlertStockCode(decision.StockCode)]; ok {
-			if quote.price > 0 {
-				decision.CurrentPrice = quote.price
-			}
-			if strings.TrimSpace(decision.StockName) == "" && strings.TrimSpace(quote.name) != "" {
-				decision.StockName = quote.name
-			}
+		code := normalizeAlertStockCode(decision.StockCode)
+		applyRealtimeHolding(&decision, holdings[code])
+		quote, ok := quotes[code]
+		if !ok || quote.price <= 0 || !quote.fresh {
+			result.Stale++
+			continue
 		}
+		decision.CurrentPrice = quote.price
+		if strings.TrimSpace(decision.StockName) == "" && strings.TrimSpace(quote.name) != "" {
+			decision.StockName = quote.name
+		}
+		evaluatedCodes[code] = struct{}{}
 
 		alerts := s.engine.EvaluateDecisionForScene(decision, monitored.scene, monitored.monitorMode)
-		alerts = append(alerts, s.engine.EvaluateAdviceChange(decision, monitored.scene, monitored.monitorMode, monitored.previousAction)...)
+		if decisionFreshForLiveEntry(decision, now) {
+			alerts = append(alerts, s.engine.EvaluateAdviceChange(decision, monitored.scene, monitored.monitorMode, monitored.previousAction)...)
+		}
 		result.Generated += len(alerts)
 		for _, alert := range alerts {
 			key := liveAlertKey(alert)
@@ -106,22 +123,27 @@ func (s *PredictionAlertService) ScanRealtimeAlerts(sendNotification bool) (*Pre
 				Reason:          alert.Reason,
 				TriggeredAt:     now,
 			}
-			if sendNotification && data.NewAlertWindowsApi("go-stock AI预测提醒", log.Title, log.Message, "").SendNotification() {
+			if err := db.Dao.Create(&log).Error; err != nil {
+				logger.SugaredLogger.Errorf("save prediction alert log error: %v", err)
+				continue
+			}
+			if sendNotification && monitored.monitorMode == "active" && data.NewAlertWindowsApi("go-stock AI预测提醒", log.Title, log.Message, "").SendNotification() {
 				sentAt := time.Now()
 				log.Status = "sent"
 				log.Channel = "windows,app"
 				log.SentAt = &sentAt
 				result.Sent++
-			}
-			if err := db.Dao.Create(&log).Error; err != nil {
-				logger.SugaredLogger.Errorf("save prediction alert log error: %v", err)
-				continue
+				if err := db.Dao.Model(&models.PredictionAlertLog{}).Where("id = ?", log.ID).Updates(map[string]any{
+					"status": log.Status, "channel": log.Channel, "sent_at": log.SentAt,
+				}).Error; err != nil {
+					logger.SugaredLogger.Errorf("update prediction alert notification status error: %v", err)
+				}
 			}
 			created = append(created, log)
 		}
 	}
 
-	resolved, err := s.resolveInactiveLogs(activeKeys)
+	resolved, err := s.resolveInactiveLogs(activeKeys, evaluatedCodes)
 	if err != nil {
 		logger.SugaredLogger.Errorf("resolve prediction alert logs error: %v", err)
 	}
@@ -178,27 +200,38 @@ func (s *PredictionAlertService) latestMonitoredDecisionsByStock(limit int) []mo
 		Limit(limit).
 		Find(&rows)
 
-	result := make([]monitoredPredictionDecision, 0, len(rows))
-	seen := make(map[string]struct{}, len(rows))
+	candidates := make(map[string]monitoredPredictionDecision, len(rows))
+	order := make([]string, 0, len(rows))
 	for _, row := range rows {
 		key := normalizeAlertStockCode(row.StockCode)
 		if key == "" {
-			continue
-		}
-		if _, ok := seen[key]; ok {
 			continue
 		}
 		scene, mode, monitored := s.monitorContext(row.SessionID)
 		if !monitored {
 			continue
 		}
-		seen[key] = struct{}{}
-		result = append(result, monitoredPredictionDecision{
+		if existing, ok := candidates[key]; ok && (existing.monitorMode == "active" || mode != "active") {
+			continue
+		}
+		previousAction := strings.ToUpper(strings.TrimSpace(row.PreviousAction))
+		if previousAction == "" {
+			previousAction = s.previousMonitoredAction(row)
+		}
+		candidate := monitoredPredictionDecision{
 			decision:       row,
 			scene:          scene,
 			monitorMode:    mode,
-			previousAction: s.previousMonitoredAction(row),
-		})
+			previousAction: previousAction,
+		}
+		if _, exists := candidates[key]; !exists {
+			order = append(order, key)
+		}
+		candidates[key] = candidate
+	}
+	result := make([]monitoredPredictionDecision, 0, len(order))
+	for _, key := range order {
+		result = append(result, candidates[key])
 	}
 	return result
 }
@@ -240,6 +273,8 @@ func (s *PredictionAlertService) previousMonitoredAction(current models.Predicti
 type alertQuoteSnapshot struct {
 	price float64
 	name  string
+	at    time.Time
+	fresh bool
 }
 
 func (s *PredictionAlertService) refreshRealtimeQuotes(decisions []monitoredPredictionDecision) map[string]alertQuoteSnapshot {
@@ -276,9 +311,12 @@ func (s *PredictionAlertService) refreshRealtimeQuotes(decisions []monitoredPred
 		if price <= 0 {
 			continue
 		}
+		quoteAt := parseAlertQuoteTime(info.Date, info.Time)
 		result[code] = alertQuoteSnapshot{
 			price: price,
 			name:  strings.TrimSpace(info.Name),
+			at:    quoteAt,
+			fresh: freshAlertQuote(quoteAt, time.Now()),
 		}
 	}
 	return result
@@ -297,12 +335,12 @@ func (s *PredictionAlertService) recentlyAlerted(alertKey string) bool {
 		return true
 	}
 	if latest.Status == "resolved" {
-		return false
+		return time.Since(latest.TriggeredAt) < predictionAlertCooldown
 	}
 	return true
 }
 
-func (s *PredictionAlertService) resolveInactiveLogs(activeKeys map[string]struct{}) (int, error) {
+func (s *PredictionAlertService) resolveInactiveLogs(activeKeys, evaluatedCodes map[string]struct{}) (int, error) {
 	cutoff := time.Now().AddDate(0, 0, -predictionAlertLookbackDays)
 	var logs []models.PredictionAlertLog
 	err := db.Dao.Where("status IN ? AND triggered_at >= ?", []string{"new", "sent", "read", "ignored"}, cutoff).
@@ -313,6 +351,11 @@ func (s *PredictionAlertService) resolveInactiveLogs(activeKeys map[string]struc
 
 	resolved := 0
 	for _, log := range logs {
+		if evaluatedCodes != nil {
+			if _, ok := evaluatedCodes[normalizeAlertStockCode(log.StockCode)]; !ok {
+				continue
+			}
+		}
 		if _, ok := activeKeys[log.AlertKey]; ok {
 			continue
 		}
@@ -332,7 +375,82 @@ func liveAlertKey(alert PredictionAlert) string {
 	if code == "" || reason == "" {
 		return ""
 	}
-	return fmt.Sprintf("prediction_live:%s:%d:%s", code, alert.DecisionID, reason)
+	scene := strings.TrimSpace(strings.ToLower(alert.Scene))
+	if reason == "advice_change" {
+		reason += ":" + strings.ToLower(strings.TrimSpace(alert.SuggestedAction))
+	}
+	return fmt.Sprintf("prediction_live:%s:%s:%s", code, scene, reason)
+}
+
+func applyRealtimeHolding(decision *models.PredictionDecision, holding holdingSnapshot) {
+	if decision == nil {
+		return
+	}
+	if holding.volume <= 0 || holding.costPrice <= 0 {
+		decision.HoldingVolume = 0
+		decision.CostPrice = 0
+		return
+	}
+	oldCost := decision.CostPrice
+	if oldCost > 0 {
+		factor := holding.costPrice / oldCost
+		if factor >= 0.1 && factor <= 10 {
+			if decision.DefensePrice > 0 {
+				decision.DefensePrice *= factor
+			}
+			if decision.StopLossPrice > 0 {
+				decision.StopLossPrice *= factor
+			}
+			if decision.TakeProfitPrice > 0 {
+				decision.TakeProfitPrice *= factor
+			}
+		}
+	}
+	decision.HoldingVolume = holding.volume
+	decision.CostPrice = holding.costPrice
+	if strings.TrimSpace(holding.name) != "" {
+		decision.StockName = holding.name
+	}
+}
+
+func parseAlertQuoteTime(date, clock string) time.Time {
+	date = strings.TrimSpace(strings.ReplaceAll(date, "/", "-"))
+	clock = strings.TrimSpace(clock)
+	if date == "" || clock == "" {
+		return time.Time{}
+	}
+	for _, layout := range []string{"2006-01-02 15:04:05", "2006-01-02 15:04"} {
+		if parsed, err := time.ParseInLocation(layout, date+" "+clock, time.FixedZone("Asia/Shanghai", 8*60*60)); err == nil {
+			return parsed
+		}
+	}
+	return time.Time{}
+}
+
+func freshAlertQuote(quoteAt, now time.Time) bool {
+	if quoteAt.IsZero() {
+		return false
+	}
+	location := time.FixedZone("Asia/Shanghai", 8*60*60)
+	localNow := now.In(location)
+	localQuote := quoteAt.In(location)
+	if localNow.Format("2006-01-02") != localQuote.Format("2006-01-02") {
+		return false
+	}
+	age := localNow.Sub(localQuote)
+	return age >= -2*time.Minute && age <= predictionQuoteMaxAge
+}
+
+func decisionFreshForLiveEntry(decision models.PredictionDecision, now time.Time) bool {
+	if strings.TrimSpace(decision.DecisionDate) == "" {
+		return false
+	}
+	decisionDate, err := time.ParseInLocation("2006-01-02", decision.DecisionDate, time.FixedZone("Asia/Shanghai", 8*60*60))
+	if err != nil {
+		return false
+	}
+	age := now.In(decisionDate.Location()).Sub(decisionDate)
+	return age >= 0 && age <= 4*24*time.Hour
 }
 
 func normalizeAlertStockCode(code string) string {

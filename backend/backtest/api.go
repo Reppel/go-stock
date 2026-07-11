@@ -23,6 +23,7 @@ type PredictionService struct {
 
 var (
 	predictionTablesMu    sync.Mutex
+	predictionDecisionsMu sync.Mutex
 	predictionTablesReady bool
 )
 
@@ -301,7 +302,9 @@ func (s *PredictionService) CreateSession(
 
 	session.Status = "done"
 	db.Dao.Save(session)
-	s.generateSessionDecisions(session, resultHypotheses, universe, endDate)
+	if _, err := s.generateSessionDecisions(session, resultHypotheses, universe, endDate); err != nil {
+		logger.SugaredLogger.Errorf("generate prediction decisions for session %d error: %v", session.ID, err)
+	}
 
 	return session, resultHypotheses, nil
 }
@@ -426,7 +429,7 @@ func (s *PredictionService) SaveObservation(hypothesisID uint) error {
 	if result.RowsAffected == 0 {
 		return fmt.Errorf("预测假设不存在")
 	}
-	return nil
+	return s.refreshAfterMonitorStatusChange(hypothesis.SessionID)
 }
 
 // SaveHypothesis 保存假设为监控
@@ -477,7 +480,7 @@ func (s *PredictionService) SaveHypothesis(hypothesisID uint) error {
 	if result.RowsAffected == 0 {
 		return fmt.Errorf("预测假设不存在")
 	}
-	return nil
+	return s.refreshAfterMonitorStatusChange(hypothesis.SessionID)
 }
 
 // DisableHypothesis 禁用假设
@@ -486,6 +489,10 @@ func (s *PredictionService) DisableHypothesis(hypothesisID uint) error {
 		return fmt.Errorf("初始化预测工厂表失败: %w", err)
 	}
 
+	var hypothesis models.PredictionHypothesis
+	if err := db.Dao.First(&hypothesis, hypothesisID).Error; err != nil {
+		return fmt.Errorf("预测假设不存在")
+	}
 	result := db.Dao.Model(&models.PredictionHypothesis{}).
 		Where("id = ?", hypothesisID).
 		Update("status", "disabled")
@@ -495,7 +502,31 @@ func (s *PredictionService) DisableHypothesis(hypothesisID uint) error {
 	if result.RowsAffected == 0 {
 		return fmt.Errorf("预测假设不存在")
 	}
-	return nil
+	return s.refreshAfterMonitorStatusChange(hypothesis.SessionID)
+}
+
+func (s *PredictionService) refreshAfterMonitorStatusChange(sessionID uint) error {
+	var monitored int64
+	if err := db.Dao.Model(&models.PredictionHypothesis{}).
+		Where("session_id = ? AND status IN ?", sessionID, []string{"active", "watch"}).
+		Count(&monitored).Error; err != nil {
+		return err
+	}
+	if monitored == 0 {
+		return nil
+	}
+	featureDate, err := latestAdjustedFeatureDate()
+	if err == nil && featureDate != "" {
+		_, err = s.refreshMonitoredSessionDecisions(sessionID, featureDate)
+	}
+	if err == nil && featureDate != "" {
+		return nil
+	}
+	_ = db.Dao.Where("session_id = ?", sessionID).Delete(&models.PredictionDecision{}).Error
+	if err == nil {
+		err = fmt.Errorf("no adjusted feature is available")
+	}
+	return fmt.Errorf("策略状态已更新，但操作建议刷新失败，盘中提醒已暂停: %w", err)
 }
 
 // GetHypothesisStats 获取假设验证统计
@@ -613,21 +644,22 @@ func (s *PredictionService) generateSessionDecisions(
 	hypotheses []models.PredictionHypothesis,
 	universe []string,
 	endDate string,
-) []models.PredictionDecision {
+) ([]models.PredictionDecision, error) {
 	if session == nil || len(hypotheses) == 0 || len(universe) == 0 {
-		return nil
+		return nil, fmt.Errorf("missing session, monitored strategy, or stock universe")
 	}
+	predictionDecisionsMu.Lock()
+	defer predictionDecisionsMu.Unlock()
 
 	features := s.latestFeatureMap(universe, endDate)
 	if len(features) == 0 {
-		return nil
+		return nil, fmt.Errorf("no adjusted feature is available on or before %s", endDate)
 	}
 	quotes := latestQuoteMap(universe)
 	holdings := holdingMap(universe)
 	previousFeatures := s.previousFeatureMap(features)
 	previousActions := latestDecisionActionMap(universe, session.ID)
 
-	_ = db.Dao.Where("session_id = ?", session.ID).Delete(&models.PredictionDecision{}).Error
 	decisions := make([]models.PredictionDecision, 0, len(features))
 	for _, code := range universe {
 		f, ok := features[strings.ToLower(code)]
@@ -638,13 +670,20 @@ func (s *PredictionService) generateSessionDecisions(
 		if decision.StockCode == "" {
 			continue
 		}
-		if err := db.Dao.Create(&decision).Error; err != nil {
-			logger.SugaredLogger.Errorf("save prediction decision error: %v", err)
-			continue
-		}
 		decisions = append(decisions, decision)
 	}
-	return decisions
+	if len(decisions) == 0 {
+		return nil, fmt.Errorf("no prediction decision was generated for session %d", session.ID)
+	}
+	if err := db.Dao.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("session_id = ?", session.ID).Delete(&models.PredictionDecision{}).Error; err != nil {
+			return err
+		}
+		return tx.CreateInBatches(&decisions, 25).Error
+	}); err != nil {
+		return nil, err
+	}
+	return decisions, nil
 }
 
 func (s *PredictionService) latestFeatureMap(universe []string, endDate string) map[string]models.StockFeature {
@@ -677,10 +716,10 @@ func (s *PredictionService) previousFeatureMap(current map[string]models.StockFe
 	return result
 }
 
-func latestDecisionActionMap(universe []string, excludeSessionID uint) map[string]string {
+func latestDecisionActionMap(universe []string, sessionID uint) map[string]string {
 	result := make(map[string]string, len(universe))
 	var decisions []models.PredictionDecision
-	db.Dao.Where("stock_code IN ? AND session_id <> ?", universe, excludeSessionID).
+	db.Dao.Where("stock_code IN ? AND session_id = ?", universe, sessionID).
 		Order("created_at desc").Find(&decisions)
 	for _, decision := range decisions {
 		key := strings.ToLower(decision.StockCode)
@@ -909,39 +948,174 @@ func uniqueStrings(items []string) []string {
 	return result
 }
 
-// ScanSignals 扫描今日触发信号
-func (s *PredictionService) ScanSignals() {
+type PredictionDecisionRefreshResult struct {
+	FeatureDate         string `json:"featureDate"`
+	MonitoredHypotheses int    `json:"monitoredHypotheses"`
+	RefreshedSessions   int    `json:"refreshedSessions"`
+	RefreshedDecisions  int    `json:"refreshedDecisions"`
+	FailedSessions      int    `json:"failedSessions"`
+}
+
+func (s *PredictionService) RefreshMonitoredDecisions(featureDate string) (*PredictionDecisionRefreshResult, error) {
+	result := &PredictionDecisionRefreshResult{}
 	if err := ensurePredictionTables(); err != nil {
-		logger.SugaredLogger.Errorf("ensure prediction tables error: %v", err)
-		return
+		return result, err
+	}
+	featureDate = strings.TrimSpace(featureDate)
+	if featureDate == "" {
+		latest, err := latestAdjustedFeatureDate()
+		if err != nil {
+			return result, err
+		}
+		featureDate = latest
+	}
+	result.FeatureDate = featureDate
+	if featureDate == "" {
+		return result, fmt.Errorf("no adjusted feature is available for monitored decisions")
 	}
 
 	var hypotheses []models.PredictionHypothesis
-	db.Dao.Where("status = ?", "active").Find(&hypotheses)
+	if err := db.Dao.Where("status IN ?", []string{"active", "watch"}).Find(&hypotheses).Error; err != nil {
+		return result, err
+	}
+	result.MonitoredHypotheses = len(hypotheses)
+	sessionIDs := make(map[uint]struct{})
+	for _, hypothesis := range hypotheses {
+		sessionIDs[hypothesis.SessionID] = struct{}{}
+	}
+	for sessionID := range sessionIDs {
+		decisions, err := s.refreshMonitoredSessionDecisions(sessionID, featureDate)
+		if err != nil {
+			result.FailedSessions++
+			logger.SugaredLogger.Errorf("refresh monitored decisions for session %d error: %v", sessionID, err)
+			continue
+		}
+		result.RefreshedSessions++
+		result.RefreshedDecisions += len(decisions)
+	}
+	if result.FailedSessions > 0 {
+		return result, fmt.Errorf("%d monitored sessions failed to refresh decisions", result.FailedSessions)
+	}
+	return result, nil
+}
+
+func latestAdjustedFeatureDate() (string, error) {
+	var latest string
+	err := db.Dao.Model(&models.StockFeature{}).
+		Where("date <= ? AND feature_version = ? AND adjusted = ?", time.Now().Format("2006-01-02"), CurrentFeatureVersion, true).
+		Select("COALESCE(MAX(date), '')").Scan(&latest).Error
+	return latest, err
+}
+
+func (s *PredictionService) refreshMonitoredSessionDecisions(sessionID uint, featureDate string) ([]models.PredictionDecision, error) {
+	var session models.PredictionSession
+	if err := db.Dao.First(&session, sessionID).Error; err != nil {
+		return nil, err
+	}
+	if session.Status != "done" {
+		return nil, fmt.Errorf("prediction session %d is not complete", sessionID)
+	}
+	var hypotheses []models.PredictionHypothesis
+	if err := db.Dao.Where("session_id = ? AND status IN ?", sessionID, []string{"active", "watch"}).Find(&hypotheses).Error; err != nil {
+		return nil, err
+	}
+	hypotheses = selectMonitoredHypotheses(hypotheses)
+	if len(hypotheses) == 0 {
+		return nil, nil
+	}
+
+	var universe []string
+	if strings.TrimSpace(session.UniverseJSON) != "" {
+		if err := json.Unmarshal([]byte(session.UniverseJSON), &universe); err != nil {
+			return nil, fmt.Errorf("decode frozen stock universe: %w", err)
+		}
+	}
+	if len(universe) == 0 {
+		universe = NewStockPoolService().GetStockPool(session.StockScope)
+	}
+	universe = uniqueStrings(universe)
+	if len(universe) == 0 {
+		return nil, fmt.Errorf("monitored session %d has an empty stock universe", sessionID)
+	}
+
+	decisionSession := session
+	decisionSession.EndDate = featureDate
+	return s.generateSessionDecisions(&decisionSession, hypotheses, universe, featureDate)
+}
+
+func selectMonitoredHypotheses(hypotheses []models.PredictionHypothesis) []models.PredictionHypothesis {
+	hasActive := false
+	for _, hypothesis := range hypotheses {
+		if hypothesis.Status == "active" {
+			hasActive = true
+			break
+		}
+	}
+	selected := make([]models.PredictionHypothesis, 0, len(hypotheses))
+	for _, hypothesis := range hypotheses {
+		if (hasActive && hypothesis.Status == "active") || (!hasActive && hypothesis.Status == "watch") {
+			selected = append(selected, hypothesis)
+		}
+	}
+	return selected
+}
+
+type PredictionSignalScanResult struct {
+	ActiveHypotheses    int    `json:"activeHypotheses"`
+	MonitoredHypotheses int    `json:"monitoredHypotheses"`
+	FeatureDate         string `json:"featureDate"`
+	FeatureRows         int    `json:"featureRows"`
+	RefreshedSessions   int    `json:"refreshedSessions"`
+	RefreshedDecisions  int    `json:"refreshedDecisions"`
+	Generated           int    `json:"generated"`
+	Failed              int    `json:"failed"`
+}
+
+// ScanSignals 扫描今日触发信号
+func (s *PredictionService) ScanSignals() (*PredictionSignalScanResult, error) {
+	result := &PredictionSignalScanResult{}
+	if err := ensurePredictionTables(); err != nil {
+		return result, err
+	}
+
+	var hypotheses []models.PredictionHypothesis
+	if err := db.Dao.Where("status = ?", "active").Find(&hypotheses).Error; err != nil {
+		return result, err
+	}
+	result.ActiveHypotheses = len(hypotheses)
 
 	today := time.Now().Format("2006-01-02")
-	var signalDate string
-	db.Dao.Model(&models.StockFeature{}).
+	if err := db.Dao.Model(&models.StockFeature{}).
 		Where("date <= ? AND feature_version = ? AND adjusted = ?", today, CurrentFeatureVersion, true).
-		Select("MAX(date)").Scan(&signalDate)
-	if signalDate == "" || signalDate != today {
-		logger.SugaredLogger.Warnf("scan prediction signals skipped: current feature not ready, latest=%s today=%s", signalDate, today)
-		return
+		Select("MAX(date)").Scan(&result.FeatureDate).Error; err != nil {
+		return result, err
 	}
+	if result.FeatureDate == "" || result.FeatureDate != today {
+		logger.SugaredLogger.Warnf("scan prediction signals skipped: current feature not ready, latest=%s today=%s", result.FeatureDate, today)
+		return result, nil
+	}
+	refreshResult, refreshErr := s.RefreshMonitoredDecisions(result.FeatureDate)
+	if refreshResult != nil {
+		result.MonitoredHypotheses = refreshResult.MonitoredHypotheses
+		result.RefreshedSessions = refreshResult.RefreshedSessions
+		result.RefreshedDecisions = refreshResult.RefreshedDecisions
+		result.Failed += refreshResult.FailedSessions
+	}
+
 	for _, h := range hypotheses {
 		var rule Rule
 		if err := json.Unmarshal([]byte(h.RuleJSON), &rule); err != nil {
+			result.Failed++
 			continue
 		}
 
 		var session models.PredictionSession
 		stockScope := "全部A股"
-		if err := db.Dao.Select("stock_scope").First(&session, h.SessionID).Error; err == nil && session.StockScope != "" {
+		if err := db.Dao.Select("stock_scope", "universe_json").First(&session, h.SessionID).Error; err == nil && session.StockScope != "" {
 			stockScope = session.StockScope
 		}
 
-		poolService := NewStockPoolService()
-		universe := poolService.GetStockPool(stockScope)
+		universe := NewStockPoolService().GetStockPool(stockScope)
 		if strings.TrimSpace(session.UniverseJSON) != "" {
 			_ = json.Unmarshal([]byte(session.UniverseJSON), &universe)
 		}
@@ -953,7 +1127,8 @@ func (s *PredictionService) ScanSignals() {
 			universe = nil
 		}
 
-		features := s.validator.repo.GetByDate(signalDate, universe)
+		features := s.validator.repo.GetByDate(result.FeatureDate, universe)
+		result.FeatureRows += len(features)
 		currentMap := stockFeatureMap(features)
 		previousMap := s.previousFeatureMap(currentMap)
 		for _, f := range features {
@@ -961,75 +1136,68 @@ func (s *PredictionService) ScanSignals() {
 			if previous == nil {
 				previous = featurePointer(previousMap, f.StockCode)
 			}
-			if NewStrategyEngine().MatchConditionsWithPrevious(rule.EntryConditions, f, previous) {
-				// 检查是否已经存在
-				var count int64
-				db.Dao.Model(&models.PredictionSignal{}).
-					Where("hypothesis_id = ? AND stock_code = ? AND signal_date = ?", h.ID, f.StockCode, signalDate).
-					Count(&count)
-				if count > 0 {
-					continue
-				}
-
-				dataAsOf := f.DataAsOf
-				if dataAsOf.IsZero() {
-					dataAsOf = time.Now()
-				}
-				decisionID := fmt.Sprintf("pred-%d-%s-%s", h.ID, f.StockCode, signalDate)
-				reasonsJSON, _ := json.Marshal([]string{"active 预测假设入场条件满足"})
-				risksJSON, _ := json.Marshal([]string{"仅供观察，不代表盈利概率"})
-				signal := models.PredictionSignal{
-					HypothesisID: h.ID,
-					StockCode:    f.StockCode,
-					StockName:    f.StockCode,
-					SignalDate:   signalDate,
-					EntryPrice:   0,
-					TargetDate:   "",
-					TargetReturn: h.TargetReturn,
-					Status:       "pending_entry",
-					DecisionID:   decisionID,
-					DataAsOf:     dataAsOf,
-					ReasonsJSON:  string(reasonsJSON),
-					RisksJSON:    string(risksJSON),
-				}
-				db.Dao.Create(&signal)
-
-				metricsJSON, _ := json.Marshal(map[string]any{
-					"winRate":      h.WinRate,
-					"avgReturn":    h.AvgReturn,
-					"maxDrawdown":  h.MaxDrawdown,
-					"tradeCount":   h.TradeCount,
-					"outSampleAvg": h.OutSampleAvgReturn,
-				})
-				matchedFactsJSON, _ := json.Marshal(map[string]any{
-					"close":       f.Close,
-					"ma5":         f.MA5,
-					"ma20":        f.MA20,
-					"volumeRatio": f.VolumeRatio,
-				})
-				_ = db.Dao.Create(&models.TradeDecisionLog{
-					DecisionID:       decisionID,
-					StockCode:        f.StockCode,
-					StockName:        f.StockCode,
-					Action:           "buy_watch",
-					Score:            s.calculateSignalScore(h, f),
-					ScoreType:        "heuristic",
-					CurrentPrice:     f.Close,
-					ReasonsJSON:      string(reasonsJSON),
-					RisksJSON:        string(risksJSON),
-					MatchedFactsJSON: string(matchedFactsJSON),
-					MetricsJSON:      string(metricsJSON),
-					StrategyID:       h.ID,
-					StrategyVersion:  h.StrategyVersion,
-					FeatureVersion:   f.FeatureVersion,
-					SignalDate:       signalDate,
-					DataAsOf:         dataAsOf,
-					ValidUntil:       time.Now().AddDate(0, 0, 5),
-					CreatedAt:        time.Now(),
-				}).Error
+			if !NewStrategyEngine().MatchConditionsWithPrevious(rule.EntryConditions, f, previous) {
+				continue
 			}
+
+			var count int64
+			if err := db.Dao.Model(&models.PredictionSignal{}).
+				Where("hypothesis_id = ? AND stock_code = ? AND signal_date = ?", h.ID, f.StockCode, result.FeatureDate).
+				Count(&count).Error; err != nil {
+				result.Failed++
+				continue
+			}
+			if count > 0 {
+				continue
+			}
+
+			dataAsOf := f.DataAsOf
+			if dataAsOf.IsZero() {
+				dataAsOf = time.Now()
+			}
+			decisionID := fmt.Sprintf("pred-%d-%s-%s", h.ID, f.StockCode, result.FeatureDate)
+			reasonsJSON, _ := json.Marshal([]string{"active 预测假设入场条件满足"})
+			risksJSON, _ := json.Marshal([]string{"仅供观察，不代表盈利概率"})
+			signal := models.PredictionSignal{
+				HypothesisID: h.ID, StockCode: f.StockCode, StockName: f.StockCode,
+				SignalDate: result.FeatureDate, TargetReturn: h.TargetReturn, Status: "pending_entry",
+				DecisionID: decisionID, DataAsOf: dataAsOf, ReasonsJSON: string(reasonsJSON), RisksJSON: string(risksJSON),
+			}
+			metricsJSON, _ := json.Marshal(map[string]any{
+				"winRate": h.WinRate, "avgReturn": h.AvgReturn, "maxDrawdown": h.MaxDrawdown,
+				"tradeCount": h.TradeCount, "outSampleAvg": h.OutSampleAvgReturn,
+			})
+			matchedFactsJSON, _ := json.Marshal(map[string]any{
+				"close": f.Close, "ma5": f.MA5, "ma20": f.MA20, "volumeRatio": f.VolumeRatio,
+			})
+			decisionLog := models.TradeDecisionLog{
+				DecisionID: decisionID, StockCode: f.StockCode, StockName: f.StockCode,
+				Action: "buy_watch", Score: s.calculateSignalScore(h, f), ScoreType: "heuristic", CurrentPrice: f.Close,
+				ReasonsJSON: string(reasonsJSON), RisksJSON: string(risksJSON), MatchedFactsJSON: string(matchedFactsJSON),
+				MetricsJSON: string(metricsJSON), StrategyID: h.ID, StrategyVersion: h.StrategyVersion,
+				FeatureVersion: f.FeatureVersion, SignalDate: result.FeatureDate, DataAsOf: dataAsOf,
+				ValidUntil: time.Now().AddDate(0, 0, 5), CreatedAt: time.Now(),
+			}
+			if err := db.Dao.Transaction(func(tx *gorm.DB) error {
+				if err := tx.Create(&signal).Error; err != nil {
+					return err
+				}
+				return tx.Create(&decisionLog).Error
+			}); err != nil {
+				logger.SugaredLogger.Errorf("create prediction signal %s error: %v", decisionID, err)
+				result.Failed++
+				continue
+			}
+			result.Generated++
 		}
 	}
+	if refreshErr != nil {
+		return result, refreshErr
+	}
+	if result.Failed > 0 {
+		return result, fmt.Errorf("信号扫描存在 %d 条处理失败", result.Failed)
+	}
+	return result, nil
 }
 
 func (s *PredictionService) calculateSignalScore(h models.PredictionHypothesis, f models.StockFeature) float64 {
@@ -1058,27 +1226,40 @@ func (s *PredictionService) calculateSignalScore(h models.PredictionHypothesis, 
 	return score
 }
 
+type PredictionSignalValidationResult struct {
+	Pending   int `json:"pending"`
+	Entered   int `json:"entered"`
+	Missed    int `json:"missed"`
+	Validated int `json:"validated"`
+	Waiting   int `json:"waiting"`
+	Failed    int `json:"failed"`
+}
+
 // DailyValidateSignals 每日验证 pending 信号
-func (s *PredictionService) DailyValidateSignals() {
+func (s *PredictionService) DailyValidateSignals() (*PredictionSignalValidationResult, error) {
+	result := &PredictionSignalValidationResult{}
 	if err := ensurePredictionTables(); err != nil {
-		logger.SugaredLogger.Errorf("ensure prediction tables error: %v", err)
-		return
+		return result, err
 	}
 
 	var signals []models.PredictionSignal
-	db.Dao.Where("status IN ?", []string{"pending_entry", "pending"}).Find(&signals)
+	if err := db.Dao.Where("status IN ?", []string{"pending_entry", "pending"}).Find(&signals).Error; err != nil {
+		return result, err
+	}
+	result.Pending = len(signals)
 
 	today := time.Now().Format("2006-01-02")
-	config := DefaultBacktestConfig()
-	fillSimulator := NewFillSimulator(config)
+	fillSimulator := NewFillSimulator(DefaultBacktestConfig())
 	for _, signal := range signals {
 		var hypothesis models.PredictionHypothesis
-		if db.Dao.First(&hypothesis, signal.HypothesisID).Error != nil {
+		if err := db.Dao.First(&hypothesis, signal.HypothesisID).Error; err != nil {
+			result.Failed++
 			continue
 		}
 		if signal.Status == "pending_entry" {
 			entryFeature, ok := s.validator.repo.GetFirstAfter(signal.StockCode, signal.SignalDate)
 			if !ok || entryFeature.Open <= 0 {
+				result.Waiting++
 				continue
 			}
 			var signalFeature *models.StockFeature
@@ -1090,79 +1271,104 @@ func (s *PredictionService) DailyValidateSignals() {
 			if !tradable {
 				signal.Status = "missed_entry"
 				signal.ValidatedAt = time.Now()
-				db.Dao.Save(&signal)
+				if err := db.Dao.Save(&signal).Error; err != nil {
+					result.Failed++
+				} else {
+					result.Missed++
+				}
 				continue
 			}
 			signal.EntryDate = entryFeature.Date
 			signal.EntryPrice = entryFill.Price
 			signal.Status = "pending"
-			db.Dao.Save(&signal)
+			if err := db.Dao.Save(&signal).Error; err != nil {
+				result.Failed++
+				continue
+			}
+			result.Entered++
 		}
 		if signal.TargetDate == "" {
 			signal.TargetDate = s.nthTradingDateAfter(signal.EntryDate, hypothesis.TimeHorizon)
 			if signal.TargetDate == "" {
+				result.Waiting++
 				continue
 			}
-			db.Dao.Save(&signal)
+			if err := db.Dao.Save(&signal).Error; err != nil {
+				result.Failed++
+				continue
+			}
 		}
-		if signal.TargetDate <= today {
-			points := s.validator.repo.GetFeatureRange(signal.StockCode, signal.EntryDate, today)
-			if len(points) == 0 || points[0].Date != signal.EntryDate {
-				continue
-			}
-			var signalFeature *models.StockFeature
-			if rows := s.validator.repo.GetFeatureRange(signal.StockCode, signal.SignalDate, signal.SignalDate); len(rows) > 0 {
-				signalFeature = &rows[0]
-			}
-			entryOrder := SimOrder{ID: signal.DecisionID, StockCode: signal.StockCode, Side: OrderSideBuy, Quantity: 100, PriceHint: points[0].Open}
-			entryFill, entryFilled := fillSimulator.Fill(entryOrder, points[0], signalFeature, points[0].Date)
-			if !entryFilled || entryFill.NetAmount <= 0 {
-				continue
-			}
+		if signal.TargetDate > today {
+			result.Waiting++
+			continue
+		}
 
-			var exitFill SimFill
-			exitIndex := -1
-			for i := range points {
-				if points[i].Date < signal.TargetDate {
-					continue
-				}
-				var previous *models.StockFeature
-				if i > 0 {
-					previous = &points[i-1]
-				}
-				exitOrder := SimOrder{ID: signal.DecisionID, StockCode: signal.StockCode, Side: OrderSideSell, Quantity: entryFill.Quantity, PriceHint: points[i].Close}
-				if fill, filled := fillSimulator.Fill(exitOrder, points[i], previous, points[i].Date); filled {
-					exitFill = fill
-					exitIndex = i
-					break
-				}
-			}
-			if exitIndex < 0 {
+		points := s.validator.repo.GetFeatureRange(signal.StockCode, signal.EntryDate, today)
+		if len(points) == 0 || points[0].Date != signal.EntryDate {
+			result.Waiting++
+			continue
+		}
+		var signalFeature *models.StockFeature
+		if rows := s.validator.repo.GetFeatureRange(signal.StockCode, signal.SignalDate, signal.SignalDate); len(rows) > 0 {
+			signalFeature = &rows[0]
+		}
+		entryOrder := SimOrder{ID: signal.DecisionID, StockCode: signal.StockCode, Side: OrderSideBuy, Quantity: 100, PriceHint: points[0].Open}
+		entryFill, entryFilled := fillSimulator.Fill(entryOrder, points[0], signalFeature, points[0].Date)
+		if !entryFilled || entryFill.NetAmount <= 0 {
+			result.Failed++
+			continue
+		}
+
+		var exitFill SimFill
+		exitIndex := -1
+		for i := range points {
+			if points[i].Date < signal.TargetDate {
 				continue
 			}
+			var previous *models.StockFeature
+			if i > 0 {
+				previous = &points[i-1]
+			}
+			exitOrder := SimOrder{ID: signal.DecisionID, StockCode: signal.StockCode, Side: OrderSideSell, Quantity: entryFill.Quantity, PriceHint: points[i].Close}
+			if fill, filled := fillSimulator.Fill(exitOrder, points[i], previous, points[i].Date); filled {
+				exitFill = fill
+				exitIndex = i
+				break
+			}
+		}
+		if exitIndex < 0 {
+			result.Waiting++
+			continue
+		}
 
-			signal.EntryPrice = entryFill.Price
-			signal.ActualReturn = exitFill.NetAmount/entryFill.NetAmount - 1
-			for _, point := range points[:exitIndex+1] {
-				signal.MaxReturn = math.Max(signal.MaxReturn, (point.High-signal.EntryPrice)/signal.EntryPrice)
-				signal.MaxDrawdown = math.Max(signal.MaxDrawdown, (signal.EntryPrice-point.Low)/signal.EntryPrice)
+		signal.EntryPrice = entryFill.Price
+		signal.ActualReturn = exitFill.NetAmount/entryFill.NetAmount - 1
+		for _, point := range points[:exitIndex+1] {
+			signal.MaxReturn = math.Max(signal.MaxReturn, (point.High-signal.EntryPrice)/signal.EntryPrice)
+			signal.MaxDrawdown = math.Max(signal.MaxDrawdown, (signal.EntryPrice-point.Low)/signal.EntryPrice)
+		}
+		signal.Hit = signal.ActualReturn >= signal.TargetReturn
+		signal.Status = "validated"
+		signal.ValidatedAt = time.Now()
+		if err := db.Dao.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Save(&signal).Error; err != nil {
+				return err
 			}
-			signal.Hit = signal.ActualReturn >= signal.TargetReturn
-			signal.Status = "validated"
-			signal.ValidatedAt = time.Now()
-			if err := db.Dao.Transaction(func(tx *gorm.DB) error {
-				if err := tx.Save(&signal).Error; err != nil {
-					return err
-				}
-				return tx.Model(&models.PredictionHypothesis{}).Where("id = ?", signal.HypothesisID).Updates(map[string]any{
-					"valid_count":  gorm.Expr("valid_count + 1"),
-					"valid_return": gorm.Expr("(1 + valid_return) * (1 + ?) - 1", signal.ActualReturn),
-				}).Error
-			}).Error; err != nil {
-				logger.SugaredLogger.Errorf("validate prediction signal %d error: %v", signal.ID, err)
-			}
+			return tx.Model(&models.PredictionHypothesis{}).Where("id = ?", signal.HypothesisID).Updates(map[string]any{
+				"valid_count":  gorm.Expr("valid_count + 1"),
+				"valid_return": gorm.Expr("(1 + valid_return) * (1 + ?) - 1", signal.ActualReturn),
+			}).Error
+		}).Error; err != nil {
+			logger.SugaredLogger.Errorf("validate prediction signal %d error: %v", signal.ID, err)
+			result.Failed++
+		} else {
+			result.Validated++
 		}
 	}
+	if result.Failed > 0 {
+		return result, fmt.Errorf("信号验证存在 %d 条处理失败", result.Failed)
+	}
+	return result, nil
 }
 
 func (s *PredictionService) nthTradingDateAfter(date string, horizon int) string {

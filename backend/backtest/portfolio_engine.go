@@ -90,7 +90,7 @@ func (p *PortfolioEngine) RunBacktest(
 				if order.PriceHint <= 0 {
 					order.PriceHint = entryPrice(feature, config)
 				}
-				order.Quantity = affordableLotQuantity(cash, order.PriceHint, config)
+				order.Quantity = affordableLotQuantityForOrder(cash, order, feature, previous, config, date)
 				if order.Amount > 0 {
 					targetQuantity := math.Floor(order.Amount/order.PriceHint/float64(config.LotSize)) * float64(config.LotSize)
 					if targetQuantity > 0 && targetQuantity < order.Quantity {
@@ -176,13 +176,17 @@ func (p *PortfolioEngine) RunBacktest(
 	lastDate := tradingDays[len(tradingDays)-1]
 	lastFeatures := p.repo.GetByDate(lastDate, universe)
 	lastFeatureMap := stockFeatureMap(lastFeatures)
+	previousLastFeatureMap := map[string]models.StockFeature{}
+	if len(tradingDays) > 1 {
+		previousLastFeatureMap = stockFeatureMap(p.repo.GetByDate(tradingDays[len(tradingDays)-2], universe))
+	}
 	for code, pos := range positions {
 		feature, available := lastFeatureMap[code]
 		if !available || (config.UseT1Rule && pos.BuyDayIndex >= len(tradingDays)-1) {
 			continue
 		}
 		order := p.orders.BuildExitOrder(*pos, lastDate, feature.Close, "end_of_period")
-		fill, filled := fillSimulator.Fill(order, feature, nil, lastDate)
+		fill, filled := fillSimulator.Fill(order, feature, featurePointer(previousLastFeatureMap, code), lastDate)
 		if !filled {
 			continue
 		}
@@ -202,18 +206,47 @@ func (p *PortfolioEngine) RunBacktest(
 	validator := &WalkForwardValidator{}
 	result := validator.calculateMetrics(trades, dailyNAV)
 	result.BacktestConfig = config
-	result.TurnoverRate = portfolioTurnover(trades, initialCapital)
+	result.Turnover = portfolioTurnover(trades, initialCapital)
+	result.TurnoverRate = result.Turnover.TwoSidedTurnover
 	result.NoLookaheadPassed = validateNoLookahead(trades, config)
 	return result, nil
 }
 
-func affordableLotQuantity(cash, price float64, config BacktestConfig) float64 {
-	if cash <= config.MinCommission || price <= 0 || config.LotSize <= 0 {
+func affordableLotQuantityForOrder(cash float64, order SimOrder, feature models.StockFeature, previous *models.StockFeature, config BacktestConfig, tradeDate string) float64 {
+	if cash <= 0 || order.PriceHint <= 0 || config.LotSize <= 0 {
 		return 0
 	}
-	costRate := 1 + config.FeeRate + config.Slippage + config.ImpactCoefficient
-	quantity := (cash - config.MinCommission) / (price * costRate)
-	return math.Floor(quantity/float64(config.LotSize)) * float64(config.LotSize)
+	simulator := NewFillSimulator(config)
+	maxQuantity := order.Quantity
+	if maxQuantity <= 0 && order.Amount > 0 {
+		maxQuantity = math.Floor(order.Amount/order.PriceHint/float64(config.LotSize)) * float64(config.LotSize)
+	}
+	if maxQuantity <= 0 {
+		maxQuantity = math.Floor(cash/order.PriceHint/float64(config.LotSize)) * float64(config.LotSize)
+	}
+	if maxQuantity <= 0 {
+		return 0
+	}
+	lowLots := int64(0)
+	highLots := int64(maxQuantity / float64(config.LotSize))
+	var best float64
+	for lowLots <= highLots {
+		midLots := (lowLots + highLots) / 2
+		if midLots <= 0 {
+			lowLots = midLots + 1
+			continue
+		}
+		candidate := order
+		candidate.Quantity = float64(midLots * int64(config.LotSize))
+		fill, ok := simulator.Fill(candidate, feature, previous, tradeDate)
+		if ok && fill.NetAmount > 0 && fill.NetAmount <= cash+1e-6 {
+			best = candidate.Quantity
+			lowLots = midLots + 1
+		} else {
+			highLots = midLots - 1
+		}
+	}
+	return best
 }
 
 func closedPortfolioTrade(pos PortfolioPosition, fill SimFill, sellDate string, dayIndex int, reason string) Trade {
@@ -248,15 +281,21 @@ func validateNoLookahead(trades []Trade, config BacktestConfig) bool {
 	return true
 }
 
-func portfolioTurnover(trades []Trade, initialCapital float64) float64 {
+func portfolioTurnover(trades []Trade, initialCapital float64) TurnoverBreakdown {
 	if initialCapital <= 0 {
-		return 0
+		return TurnoverBreakdown{}
 	}
-	notional := 0.0
+	buy := 0.0
+	sell := 0.0
 	for _, trade := range trades {
-		notional += trade.GrossBuyAmount + trade.GrossSellAmount
+		buy += trade.GrossBuyAmount
+		sell += trade.GrossSellAmount
 	}
-	return notional / (2 * initialCapital)
+	return TurnoverBreakdown{
+		BuyTurnover:      buy / initialCapital,
+		SellTurnover:     sell / initialCapital,
+		TwoSidedTurnover: (buy + sell) / (2 * initialCapital),
+	}
 }
 
 func stockFeatureMap(features []models.StockFeature) map[string]models.StockFeature {

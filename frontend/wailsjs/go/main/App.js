@@ -10,6 +10,10 @@ export function AbortSummaryStockNews() {
   return window['go']['main']['App']['AbortSummaryStockNews']();
 }
 
+export function ActivatePredictionHypothesis(arg1) {
+  return window['go']['main']['App']['ActivatePredictionHypothesis'](arg1);
+}
+
 export function AddAllStockInfo(arg1) {
   return window['go']['main']['App']['AddAllStockInfo'](arg1);
 }
@@ -480,6 +484,10 @@ export function GetPredictionHypothesisDailyNAV(arg1) {
 
 export function GetPredictionHypothesisStats(arg1) {
   return window['go']['main']['App']['GetPredictionHypothesisStats'](arg1);
+}
+
+export function GetPredictionPaperTradingDetails(arg1) {
+  return window['go']['main']['App']['GetPredictionPaperTradingDetails'](arg1);
 }
 
 export function GetPredictionSession(arg1) {

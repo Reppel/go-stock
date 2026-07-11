@@ -53,6 +53,8 @@ import {
   GetMyPredictionHypotheses,
   SavePredictionObservation,
   SavePredictionHypothesis,
+  ActivatePredictionHypothesis,
+  GetPredictionPaperTradingDetails,
   GetPredictionHypothesisDailyNAV,
   GetPredictionBacktestTrades,
   StartFeatureSync,
@@ -125,6 +127,11 @@ const tradeRecords = ref([])
 const selectedPosition = ref(null)
 const showRecordsModal = ref(false)
 const showTradeModal = ref(false)
+const showPaperModal = ref(false)
+const paperDetailsLoading = ref(false)
+const paperDetails = ref(null)
+const selectedPaperHypothesis = ref(null)
+const paperChartRef = ref(null)
 const tradeForm = ref({
   StockCode: '',
   StockName: '',
@@ -157,6 +164,7 @@ const selectedDecision = ref(null)
 const decisionDrawerVisible = ref(false)
 const sessionViewMode = ref('history')
 let chartInstance = null
+let paperChartInstance = null
 
 onMounted(async () => {
   loadPositionRows()
@@ -182,6 +190,10 @@ onUnmounted(() => {
   if (chartInstance) {
     chartInstance.dispose()
     chartInstance = null
+  }
+  if (paperChartInstance) {
+    paperChartInstance.dispose()
+    paperChartInstance = null
   }
 })
 
@@ -249,7 +261,8 @@ const selectedBacktestStocks = computed(() => {
 })
 const monitorSummary = computed(() => ({
   active: sortedMyHypotheses.value.filter(row => row.status === 'active').length,
-  watch: sortedMyHypotheses.value.filter(row => row.status === 'watch').length,
+  forward: sortedMyHypotheses.value.filter(row => row.status === 'paper_trade').length,
+  watch: sortedMyHypotheses.value.filter(row => ['watch', 'active_candidate'].includes(row.status)).length,
   unread: sortedAlertRows.value.filter(row => ['new', 'sent'].includes(String(row.status || '').toLowerCase())).length,
   positions: positionRows.value.filter(row => Number(row.currentVolume || 0) > 0).length
 }))
@@ -677,8 +690,62 @@ async function saveHypothesis(id) {
     }
     await loadMyHypotheses()
   } catch (err) {
+    message.error('开始前向验证失败: ' + (err?.message || String(err)))
+  }
+}
+
+async function activateHypothesis(h) {
+  try {
+    const res = await ActivatePredictionHypothesis(h.id)
+    if (String(res).includes('失败')) message.error(res)
+    else message.success(res)
+    await loadMyHypotheses()
+  } catch (err) {
     message.error('启用正式监控失败: ' + (err?.message || String(err)))
   }
+}
+
+async function openPaperDetails(h) {
+  selectedPaperHypothesis.value = h
+  showPaperModal.value = true
+  paperDetailsLoading.value = true
+  try {
+    const res = await GetPredictionPaperTradingDetails(h.id)
+    if (res?.code !== 1) throw new Error(res?.msg || '加载失败')
+    paperDetails.value = res.data
+    await nextTick()
+    renderPaperChart()
+  } catch (err) {
+    paperDetails.value = null
+    message.error('加载前向验证数据失败: ' + (err?.message || String(err)))
+  } finally {
+    paperDetailsLoading.value = false
+  }
+}
+
+function renderPaperChart() {
+  if (paperChartInstance) {
+    paperChartInstance.dispose()
+    paperChartInstance = null
+  }
+  const rows = paperDetails.value?.dailies || []
+  if (!paperChartRef.value || rows.length === 0) return
+  paperChartInstance = echarts.init(paperChartRef.value)
+  paperChartInstance.setOption({
+    animationDuration: 280,
+    grid: {left: 48, right: 48, top: 24, bottom: 34},
+    tooltip: {trigger: 'axis'},
+    legend: {data: ['净值', '回撤']},
+    xAxis: {type: 'category', data: rows.map(row => row.date), boundaryGap: false},
+    yAxis: [
+      {type: 'value', name: '净值', scale: true},
+      {type: 'value', name: '回撤', axisLabel: {formatter: value => `${(Number(value) * 100).toFixed(0)}%`}}
+    ],
+    series: [
+      {name: '净值', type: 'line', showSymbol: false, data: rows.map(row => Number(row.nav || 0)), lineStyle: {width: 2}},
+      {name: '回撤', type: 'line', yAxisIndex: 1, showSymbol: false, data: rows.map(row => Number(row.drawdown || 0)), areaStyle: {opacity: 0.08}}
+    ]
+  })
 }
 
 async function saveObservation(id) {
@@ -843,6 +910,8 @@ function actionType(action) {
 
 function statusText(status) {
   if (status === 'active') return '正式监控'
+  if (status === 'paper_trade') return '前向验证'
+  if (status === 'active_candidate') return '待验证'
   if (status === 'watch') return '观察'
   if (status === 'disabled') return '已禁用'
   return '草稿'
@@ -850,6 +919,7 @@ function statusText(status) {
 
 function statusType(status) {
   if (status === 'active') return 'success'
+  if (status === 'paper_trade') return 'info'
   if (status === 'watch') return 'warning'
   return 'default'
 }
@@ -1081,9 +1151,9 @@ function todayAlertCountForHypothesis(h) {
 }
 
 function monitorReady(h) {
-  return h.strategyVersion === 'strategy_v3' && h.featureVersion === 'daily_v2_qfq' && h.noLookaheadPassed &&
+  return h.strategyVersion === 'strategy_v4' && h.featureVersion === 'daily_v2_qfq' && h.noLookaheadPassed &&
       h.tradeCount >= 30 && Number(h.outSampleTradeCount || 0) >= 15 && h.maxDrawdown <= 0.2 &&
-      h.avgReturn > 0 && h.outSampleAvgReturn > 0 && Number(h.dataCoverage || 0) >= 0.95 && h.benchmarkAvailable
+      h.avgReturn > 0 && h.outSampleAvgReturn > 0 && Number(h.dataCoverage || 0) >= 0.95 && h.benchmarkAvailable && Number(h.excessReturn || 0) > 0
 }
 
 function formatDateTime(val) {
@@ -1299,56 +1369,62 @@ function formatDate(ts) {
                   <span class="tab-label"><n-icon :component="PulseOutline"/>策略回测 {{ sortedBacktestHypotheses.length }}</span>
                 </template>
                 <div class="strategy-workbench" v-if="selectedBacktestHypothesis">
-                  <aside class="strategy-list-pane">
-                    <div class="pane-title">
+                  <section class="strategy-rank-pane">
+                    <div class="pane-title strategy-rank-title">
                       <span>策略排名</span>
-                      <n-text depth="3">{{ sortedBacktestHypotheses.length }} 个</n-text>
+                      <div class="rank-title-meta">
+                        <n-text depth="3">{{ sortedBacktestHypotheses.length }} 个候选</n-text>
+                        <n-pagination
+                            v-if="sortedBacktestHypotheses.length > listPageSize"
+                            v-model:page="backtestPage"
+                            :page-size="listPageSize"
+                            :item-count="sortedBacktestHypotheses.length"
+                            size="small"
+                        />
+                      </div>
                     </div>
                     <div class="strategy-list">
                       <button
-                          v-for="h in pagedBacktestHypotheses"
+                          v-for="(h, index) in pagedBacktestHypotheses"
                           :key="h.id"
                           type="button"
                           class="strategy-list-item"
                           :class="{active: itemId(h) === itemId(selectedBacktestHypothesis)}"
                           @click="selectBacktest(h)"
                       >
-                        <span class="strategy-item-head">
-                          <strong>{{ h.name }}</strong>
-                          <n-tag size="small" :bordered="false" :type="qualityType(backtestMetrics(h).qualityRating)">
-                            {{ qualityText(backtestMetrics(h).qualityRating) }}
-                          </n-tag>
-                        </span>
-                        <span class="strategy-item-metrics">
-                          <span>年化 <b :class="returnTone(backtestMetrics(h).annualizedReturn)">{{ formatMetricPercent(backtestMetrics(h).annualizedReturn) }}</b></span>
-                          <span>回撤 <b>{{ formatPercent(h.maxDrawdown) }}</b></span>
-                          <span>样本外 <b :class="returnTone(h.outSampleAvgReturn)">{{ formatPercent(h.outSampleAvgReturn) }}</b></span>
+                        <span class="strategy-rank-index">#{{ (backtestPage - 1) * listPageSize + index + 1 }}</span>
+                        <span class="strategy-item-body">
+                          <span class="strategy-item-head">
+                            <strong>{{ h.name }}</strong>
+                            <n-tag size="small" :bordered="false" :type="qualityType(backtestMetrics(h).qualityRating)">
+                              {{ qualityText(backtestMetrics(h).qualityRating) }}
+                            </n-tag>
+                          </span>
+                          <span class="strategy-item-metrics">
+                            <span>年化 <b :class="returnTone(backtestMetrics(h).annualizedReturn)">{{ formatMetricPercent(backtestMetrics(h).annualizedReturn) }}</b></span>
+                            <span>回撤 <b>{{ formatPercent(h.maxDrawdown) }}</b></span>
+                            <span>Sharpe <b>{{ Number(backtestMetrics(h).sharpeRatio || 0).toFixed(2) }}</b></span>
+                            <span>样本外 <b :class="returnTone(h.outSampleAvgReturn)">{{ formatPercent(h.outSampleAvgReturn) }}</b></span>
+                          </span>
                         </span>
                       </button>
                     </div>
-                    <n-pagination
-                        v-if="sortedBacktestHypotheses.length > listPageSize"
-                        v-model:page="backtestPage"
-                        :page-size="listPageSize"
-                        :item-count="sortedBacktestHypotheses.length"
-                        size="small"
-                    />
-                  </aside>
+                  </section>
 
                   <section class="strategy-detail-pane">
                     <div class="strategy-detail-header">
                       <div class="strategy-title-copy">
-                        <n-space align="center" size="small">
+                        <n-space align="center" size="small" class="strategy-title-line">
                           <h3>{{ selectedBacktestHypothesis.name }}</h3>
                           <n-tag size="small" :type="monitorReady(selectedBacktestHypothesis) ? 'success' : 'warning'">
-                            {{ monitorReady(selectedBacktestHypothesis) ? '可正式监控' : '仅建议观察' }}
+                            {{ monitorReady(selectedBacktestHypothesis) ? '可开始前向验证' : '仅建议观察' }}
                           </n-tag>
                         </n-space>
-                        <n-text depth="3">{{ selectedBacktestHypothesis.description }}</n-text>
+                        <n-text depth="3" class="strategy-description">{{ selectedBacktestHypothesis.description }}</n-text>
                       </div>
-                      <n-space size="small">
-                        <n-button size="small" @click="saveObservation(selectedBacktestHypothesis.id)">保存观察</n-button>
-                        <n-button size="small" type="primary" @click="saveHypothesis(selectedBacktestHypothesis.id)">启用监控</n-button>
+                      <n-space size="small" class="strategy-actions">
+                        <n-button size="small" @click="saveObservation(selectedBacktestHypothesis.id)">加入观察池</n-button>
+                        <n-button size="small" type="primary" @click="saveHypothesis(selectedBacktestHypothesis.id)">开始前向验证</n-button>
                       </n-space>
                     </div>
 
@@ -1364,7 +1440,7 @@ function formatDate(ts) {
                     <div class="chart-panel">
                       <div class="panel-heading">
                         <span>净值曲线</span>
-                        <n-text depth="3">{{ selectedBacktestHypothesis.tradeCount || 0 }} 笔交易 · 均持 {{ Number(backtestMetrics(selectedBacktestHypothesis).averageHoldingDays || 0).toFixed(1) }} 天</n-text>
+                        <n-text depth="3">{{ selectedBacktestHypothesis.tradeCount || 0 }} 个回测样本 · 平均持有 {{ Number(backtestMetrics(selectedBacktestHypothesis).averageHoldingDays || 0).toFixed(1) }} 个交易日</n-text>
                       </div>
                       <div ref="chartRef" class="strategy-chart" v-if="chartData.length"></div>
                       <n-empty v-else size="small" description="暂无净值数据"/>
@@ -1373,20 +1449,20 @@ function formatDate(ts) {
                     <n-tabs v-model:value="strategyDetailView" type="line" class="strategy-detail-tabs">
                       <n-tab-pane name="attribution" tab="股票归因">
                         <n-spin :show="backtestTradeLoading[selectedBacktestHypothesis.id]">
-                          <div class="table-shell" v-if="selectedBacktestStocks.length">
-                            <n-table size="small" :bordered="false" :single-line="false">
+                          <div class="table-shell strategy-table-shell" v-if="selectedBacktestStocks.length">
+                            <n-table size="small" :bordered="false" :single-line="false" class="strategy-data-table attribution-table">
                               <thead><tr><th>股票</th><th>样本</th><th>胜率</th><th>平均/中位</th><th>MFE/MAE</th><th>收益贡献</th><th>均持</th><th></th></tr></thead>
                               <tbody>
                               <template v-for="stock in selectedBacktestStocks" :key="stock.stockCode">
                                 <tr class="clickable-row" @click="toggleStockTrades(selectedBacktestHypothesis.id, stock.stockCode)">
-                                  <td><n-text strong>{{ stock.stockName || stock.stockCode }}</n-text><br><n-text depth="3">{{ stock.stockCode }}</n-text></td>
-                                  <td>{{ stock.tradeCount }}</td>
-                                  <td>{{ formatPercent(stock.winRate) }}</td>
-                                  <td>{{ formatPercent(stock.avgReturn) }} / {{ formatPercent(stock.medianReturn) }}</td>
-                                  <td>{{ formatPercent(stock.avgMfe) }} / {{ formatPercent(stock.avgMae) }}</td>
-                                  <td><span :class="returnTone(stock.pnl)">{{ formatMoney(stock.pnl) }}</span></td>
-                                  <td>{{ stock.avgHoldDays.toFixed(1) }} 天</td>
-                                  <td><n-icon :component="ChevronForwardOutline" size="16"/></td>
+                                  <td class="stock-name-cell"><n-text strong>{{ stock.stockName || stock.stockCode }}</n-text><br><n-text depth="3">{{ stock.stockCode }}</n-text></td>
+                                  <td class="number-cell">{{ stock.tradeCount }}</td>
+                                  <td class="number-cell">{{ formatPercent(stock.winRate) }}</td>
+                                  <td class="number-cell">{{ formatPercent(stock.avgReturn) }} / {{ formatPercent(stock.medianReturn) }}</td>
+                                  <td class="number-cell">{{ formatPercent(stock.avgMfe) }} / {{ formatPercent(stock.avgMae) }}</td>
+                                  <td class="number-cell"><span :class="returnTone(stock.pnl)">{{ formatMoney(stock.pnl) }}</span></td>
+                                  <td class="number-cell">{{ stock.avgHoldDays.toFixed(1) }} 天</td>
+                                  <td class="row-action-cell"><n-icon :component="ChevronForwardOutline" size="16"/></td>
                                 </tr>
                                 <tr v-if="expandedStocks[stockDetailKey(selectedBacktestHypothesis.id, stock.stockCode)]" class="trade-detail-row">
                                   <td colspan="8">
@@ -1418,19 +1494,19 @@ function formatDate(ts) {
                       </n-tab-pane>
 
                       <n-tab-pane name="trades" :tab="`全部交易 ${selectedBacktestTrades.length}`">
-                        <div class="table-shell" v-if="selectedBacktestTrades.length">
-                          <n-table size="small" :bordered="false">
+                        <div class="table-shell strategy-table-shell" v-if="selectedBacktestTrades.length">
+                          <n-table size="small" :bordered="false" class="strategy-data-table trade-table">
                             <thead><tr><th>股票</th><th>买入</th><th>卖出</th><th>数量</th><th>收益</th><th>持有</th><th>退出</th><th>成本</th></tr></thead>
                             <tbody>
                             <tr v-for="trade in selectedBacktestTrades" :key="trade.id">
-                              <td>{{ trade.stockName || trade.stockCode }}<br><n-text depth="3">{{ trade.stockCode }}</n-text></td>
+                              <td class="stock-name-cell">{{ trade.stockName || trade.stockCode }}<br><n-text depth="3">{{ trade.stockCode }}</n-text></td>
                               <td>{{ trade.buyDate }}<br>{{ formatPrice(trade.buyPrice) }}</td>
                               <td>{{ trade.sellDate }}<br>{{ formatPrice(trade.sellPrice) }}</td>
-                              <td>{{ Number(trade.quantity || 0).toFixed(0) }}</td>
-                              <td><span :class="returnTone(trade.returnRate)">{{ formatPercent(trade.returnRate) }}</span></td>
-                              <td>{{ trade.holdDays }} 天</td>
+                              <td class="number-cell">{{ Number(trade.quantity || 0).toFixed(0) }}</td>
+                              <td class="number-cell"><span :class="returnTone(trade.returnRate)">{{ formatPercent(trade.returnRate) }}</span></td>
+                              <td class="number-cell">{{ trade.holdDays }} 天</td>
                               <td>{{ exitReasonText(trade.exitReason) }}</td>
-                              <td>{{ formatMoney(Number(trade.fee || 0) + Number(trade.slippage || 0)) }}</td>
+                              <td class="number-cell">{{ formatMoney(Number(trade.fee || 0) + Number(trade.slippage || 0)) }}</td>
                             </tr>
                             </tbody>
                           </n-table>
@@ -1439,8 +1515,8 @@ function formatDate(ts) {
                       </n-tab-pane>
 
                       <n-tab-pane name="folds" tab="滚动验证">
-                        <div class="table-shell" v-if="(backtestMetrics(selectedBacktestHypothesis).walkForwardFolds || []).length">
-                          <n-table size="small" :bordered="false">
+                        <div class="table-shell strategy-table-shell compact-table-shell" v-if="(backtestMetrics(selectedBacktestHypothesis).walkForwardFolds || []).length">
+                          <n-table size="small" :bordered="false" class="strategy-data-table">
                             <thead><tr><th>验证折</th><th>区间</th><th>交易数</th><th>平均收益</th><th>最大回撤</th></tr></thead>
                             <tbody>
                             <tr v-for="(fold, index) in backtestMetrics(selectedBacktestHypothesis).walkForwardFolds" :key="index">
@@ -1474,6 +1550,7 @@ function formatDate(ts) {
         <section class="workspace-page monitor-page">
           <div class="monitor-summary">
             <div><span>正式监控</span><b>{{ monitorSummary.active }}</b></div>
+            <div><span>前向验证</span><b>{{ monitorSummary.forward }}</b></div>
             <div><span>观察策略</span><b>{{ monitorSummary.watch }}</b></div>
             <div><span>未读提醒</span><b class="negative">{{ monitorSummary.unread }}</b></div>
             <div><span>当前持仓</span><b>{{ monitorSummary.positions }}</b></div>
@@ -1515,29 +1592,56 @@ function formatDate(ts) {
             <n-tab-pane name="strategies">
               <template #tab><span class="tab-label"><n-icon :component="EyeOutline"/>策略监控</span></template>
         <section class="monitor-panel">
-          <div class="panel-heading"><span>策略监控</span><n-text depth="3">正式与观察策略</n-text></div>
+          <div class="panel-heading"><span>策略监控</span><n-text depth="3">观察池 → 前向验证 → 正式监控</n-text></div>
           <div class="table-shell" v-if="sortedMyHypotheses.length">
             <n-table size="small" :bordered="false">
-              <thead><tr><th>策略</th><th>状态</th><th>质量</th><th>胜率</th><th>平均收益</th><th>最大回撤</th><th>样本</th><th>今日提醒</th><th></th></tr></thead>
+              <thead><tr><th>策略</th><th>状态</th><th>前向进度</th><th>净值/回撤</th><th>模拟账户</th><th>回测质量</th><th>今日提醒</th><th>操作</th></tr></thead>
               <tbody>
               <tr v-for="h in pagedMyHypotheses" :key="h.id">
                 <td><n-text strong>{{ h.name }}</n-text><br><n-text depth="3">{{ h.scene }}</n-text></td>
                 <td><n-tag size="small" :type="statusType(h.status)">{{ statusText(h.status) }}</n-tag></td>
-                <td><n-tag size="small" :bordered="false" :type="qualityType(backtestMetrics(h).qualityRating)">{{ qualityText(backtestMetrics(h).qualityRating) }}</n-tag></td>
-                <td>{{ formatPercent(h.winRate) }}</td>
-                <td><span :class="returnTone(h.avgReturn)">{{ formatPercent(h.avgReturn) }}</span></td>
-                <td>{{ formatPercent(h.maxDrawdown) }}</td>
-                <td>{{ h.tradeCount }}</td>
+                <td style="min-width: 150px">
+                  <template v-if="['paper_trade', 'active'].includes(h.status) || Number(h.paperTradeDays || 0) > 0">
+                    <n-progress type="line" :height="6" :show-indicator="false" :percentage="Math.min(100, Number(h.paperTradeDays || 0) / 60 * 100)"/>
+                    <n-text depth="3">{{ h.paperTradeDays || 0 }}/60 交易日 · {{ h.paperTradeCount || 0 }}/10 笔</n-text>
+                  </template>
+                  <n-text v-else depth="3">尚未开始</n-text>
+                </td>
+                <td>
+                  <template v-if="['paper_trade', 'active'].includes(h.status) || Number(h.paperTradeDays || 0) > 0">
+                    <span :class="returnTone(Number(h.paperNav || 1) - 1)">{{ Number(h.paperNav || 1).toFixed(4) }}</span><br>
+                    <n-text depth="3">回撤 {{ formatPercent(h.paperMaxDrawdown) }}</n-text>
+                  </template>
+                  <span v-else>-</span>
+                </td>
+                <td>
+                  <template v-if="['paper_trade', 'active'].includes(h.status) || Number(h.paperTradeDays || 0) > 0">
+                    {{ formatMoney(h.paperCash) }}<br>
+                    <n-text depth="3">市值 {{ formatMoney(h.paperMarketValue) }} · {{ h.paperPositionCount || 0 }} 仓</n-text>
+                  </template>
+                  <span v-else>-</span>
+                </td>
+                <td><n-tag size="small" :bordered="false" :type="qualityType(backtestMetrics(h).qualityRating)">{{ qualityText(backtestMetrics(h).qualityRating) }}</n-tag><br><n-text depth="3">{{ h.tradeCount }} 样本</n-text></td>
                 <td>{{ todayAlertCountForHypothesis(h) }}</td>
                 <td>
-                  <n-tooltip trigger="hover">
-                    <template #trigger>
-                      <n-button quaternary circle size="small" @click="openMonitoredHypothesis(h)">
-                        <template #icon><n-icon :component="EyeOutline"/></template>
-                      </n-button>
-                    </template>
-                    打开分析
-                  </n-tooltip>
+                  <n-space size="small">
+                    <n-tooltip v-if="['paper_trade', 'active'].includes(h.status) || Number(h.paperTradeDays || 0) > 0" trigger="hover">
+                      <template #trigger><n-button size="tiny" secondary @click="openPaperDetails(h)">验证数据</n-button></template>
+                      查看现金、持仓、交易、净值和回撤
+                    </n-tooltip>
+                    <n-tooltip v-if="h.status === 'paper_trade'" trigger="hover">
+                      <template #trigger><n-button size="tiny" type="primary" :disabled="!h.paperReady" @click="activateHypothesis(h)">启用正式监控</n-button></template>
+                      {{ h.paperReadyReason || '前向验证尚未达到门槛' }}
+                    </n-tooltip>
+                    <n-tooltip trigger="hover">
+                      <template #trigger>
+                        <n-button quaternary circle size="small" @click="openMonitoredHypothesis(h)">
+                          <template #icon><n-icon :component="EyeOutline"/></template>
+                        </n-button>
+                      </template>
+                      打开回测分析
+                    </n-tooltip>
+                  </n-space>
                 </td>
               </tr>
               </tbody>
@@ -1694,7 +1798,7 @@ function formatDate(ts) {
       >
         <template v-if="selectedDecision">
           <div class="drawer-metrics">
-            <div><span>上涨概率</span><b>{{ formatPercent(selectedDecision.probability) }}</b></div>
+            <div><span>经验后验胜率</span><b>{{ formatPercent(selectedDecision.probability) }}</b></div>
             <div><span>预期净收益</span><b :class="returnTone(selectedDecision.expectedReturn)">{{ formatPercent(selectedDecision.expectedReturn) }}</b></div>
             <div><span>综合评分</span><b>{{ formatScore(selectedDecision.score) }}</b></div>
             <div><span>建议仓位</span><b>{{ selectedDecision.quantityPercent ? `${Number(selectedDecision.quantityPercent).toFixed(0)}%` : '-' }}</b></div>
@@ -1750,6 +1854,75 @@ function formatDate(ts) {
         </template>
       </n-drawer-content>
     </n-drawer>
+
+    <n-modal
+        v-model:show="showPaperModal"
+        preset="card"
+        :title="`前向验证 · ${selectedPaperHypothesis?.name || ''}`"
+        style="width: 1100px; max-width: calc(100vw - 32px);"
+    >
+      <n-spin :show="paperDetailsLoading">
+        <template v-if="paperDetails?.account?.id">
+          <n-alert :type="paperDetails.ready ? 'success' : 'info'" :show-icon="false" style="margin-bottom: 14px">
+            {{ paperDetails.reason }}
+          </n-alert>
+          <div class="metric-strip strategy-metrics">
+            <div><span>交易日</span><b>{{ paperDetails.account.tradingDays || 0 }}</b></div>
+            <div><span>已完成交易</span><b>{{ paperDetails.account.tradeCount || 0 }}</b></div>
+            <div><span>当前净值</span><b :class="returnTone(Number(paperDetails.account.nav || 1) - 1)">{{ Number(paperDetails.account.nav || 1).toFixed(4) }}</b></div>
+            <div><span>最大回撤</span><b>{{ formatPercent(paperDetails.account.maxDrawdown) }}</b></div>
+            <div><span>可用现金</span><b>{{ formatMoney(paperDetails.account.cash) }}</b></div>
+            <div><span>持仓市值</span><b>{{ formatMoney(paperDetails.account.marketValue) }}</b></div>
+          </div>
+
+          <div class="chart-panel" style="margin-top: 14px">
+            <div class="panel-heading"><span>前向净值与回撤</span><n-text depth="3">最近处理 {{ paperDetails.account.lastProcessedDate || '-' }}</n-text></div>
+            <div ref="paperChartRef" class="strategy-chart" v-if="(paperDetails.dailies || []).length"></div>
+            <n-empty v-else size="small" description="等待首个交易日快照"/>
+          </div>
+
+          <n-tabs type="line" style="margin-top: 12px">
+            <n-tab-pane name="positions" :tab="`当前持仓 ${(paperDetails.positions || []).length}`">
+              <div class="table-shell" v-if="(paperDetails.positions || []).length">
+                <n-table size="small" :bordered="false">
+                  <thead><tr><th>股票</th><th>信号/入场</th><th>数量</th><th>入场价/成本</th><th>最新价</th><th>市值</th><th>浮动收益</th><th>退出状态</th></tr></thead>
+                  <tbody><tr v-for="row in paperDetails.positions" :key="row.id">
+                    <td>{{ row.stockName || row.stockCode }}<br><n-text depth="3">{{ row.stockCode }}</n-text></td>
+                    <td>{{ row.signalDate }}<br>{{ row.entryDate }}</td>
+                    <td>{{ Number(row.quantity || 0).toFixed(0) }}</td>
+                    <td>{{ formatPrice(row.entryPrice) }}<br><n-text depth="3">{{ formatPrice(row.avgCost) }}</n-text></td>
+                    <td>{{ formatPrice(row.lastPrice) }}</td>
+                    <td>{{ formatMoney(Number(row.lastPrice || 0) * Number(row.quantity || 0)) }}</td>
+                    <td><span :class="returnTone(Number(row.lastPrice || 0) / Number(row.avgCost || 1) - 1)">{{ formatPercent(Number(row.lastPrice || 0) / Number(row.avgCost || 1) - 1) }}</span></td>
+                    <td>{{ row.pendingExitReason ? `等待成交：${exitReasonText(row.pendingExitReason)}` : '持有' }}</td>
+                  </tr></tbody>
+                </n-table>
+              </div>
+              <n-empty v-else size="small" description="当前无持仓"/>
+            </n-tab-pane>
+            <n-tab-pane name="trades" :tab="`完成交易 ${(paperDetails.trades || []).length}`">
+              <div class="table-shell" v-if="(paperDetails.trades || []).length">
+                <n-table size="small" :bordered="false">
+                  <thead><tr><th>股票</th><th>买入/卖出</th><th>数量</th><th>收益</th><th>MFE/MAE</th><th>费用+滑点</th><th>持有</th><th>退出</th></tr></thead>
+                  <tbody><tr v-for="row in paperDetails.trades" :key="row.id">
+                    <td>{{ row.stockName || row.stockCode }}<br><n-text depth="3">{{ row.stockCode }}</n-text></td>
+                    <td>{{ row.buyDate }} {{ formatPrice(row.buyPrice) }}<br>{{ row.sellDate }} {{ formatPrice(row.sellPrice) }}</td>
+                    <td>{{ Number(row.quantity || 0).toFixed(0) }}</td>
+                    <td><span :class="returnTone(row.returnRate)">{{ formatPercent(row.returnRate) }}</span></td>
+                    <td>{{ formatPercent(row.maxReturn) }} / {{ formatPercent(row.maxDrawdown) }}</td>
+                    <td>{{ formatMoney(Number(row.fee || 0) + Number(row.slippage || 0)) }}</td>
+                    <td>{{ row.holdDays }} 天</td>
+                    <td>{{ exitReasonText(row.exitReason) }}</td>
+                  </tr></tbody>
+                </n-table>
+              </div>
+              <n-empty v-else size="small" description="尚无完成交易"/>
+            </n-tab-pane>
+          </n-tabs>
+        </template>
+        <n-empty v-else description="尚未开始前向验证"/>
+      </n-spin>
+    </n-modal>
 
     <n-modal
         v-model:show="showRecordsModal"
@@ -1846,7 +2019,7 @@ function formatDate(ts) {
 <style scoped>
 .prediction-factory {
   min-height: calc(100vh - 118px);
-  padding: 0 16px 20px;
+  padding: 0 16px 92px;
   background: #f5f7f9;
   color: #20242b;
 }
@@ -2113,21 +2286,20 @@ function formatDate(ts) {
 }
 
 .strategy-workbench {
-  display: grid;
-  grid-template-columns: minmax(260px, 31%) minmax(0, 1fr);
-  min-height: 610px;
-  border: 1px solid #e2e6eb;
-  border-radius: 5px;
-  overflow: hidden;
-}
-
-.strategy-list-pane {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 14px;
-  background: #f8f9fb;
-  border-right: 1px solid #e2e6eb;
+  gap: 12px;
+}
+
+.strategy-rank-pane,
+.strategy-detail-pane {
+  border: 1px solid #e2e6eb;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.strategy-rank-pane {
+  padding: 12px 14px 14px;
 }
 
 .pane-title {
@@ -2138,17 +2310,30 @@ function formatDate(ts) {
   font-weight: 600;
 }
 
-.strategy-list {
+.strategy-rank-title {
+  margin-bottom: 10px;
+}
+
+.rank-title-meta {
   display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 7px;
+  align-items: center;
+  gap: 12px;
+}
+
+.strategy-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(238px, 1fr));
+  gap: 8px;
 }
 
 .strategy-list-item {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: stretch;
+  gap: 10px;
   width: 100%;
-  min-height: 78px;
-  padding: 10px 11px;
+  min-height: 92px;
+  padding: 10px 11px 11px;
   border: 1px solid #dfe3e8;
   border-radius: 4px;
   background: #ffffff;
@@ -2165,6 +2350,29 @@ function formatDate(ts) {
 .strategy-list-item.active {
   border-color: #2563eb;
   background: #f4f7fd;
+  box-shadow: inset 3px 0 0 #2563eb;
+}
+
+.strategy-rank-index {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  border-radius: 4px;
+  background: #eef2f7;
+  color: #667085;
+  font-size: 12px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.strategy-list-item.active .strategy-rank-index {
+  background: #dbe8ff;
+  color: #1d4ed8;
+}
+
+.strategy-item-body {
+  min-width: 0;
 }
 
 .strategy-item-head {
@@ -2180,7 +2388,7 @@ function formatDate(ts) {
 
 .strategy-item-metrics {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 5px;
   margin-top: 9px;
   color: #737b88;
@@ -2197,23 +2405,39 @@ function formatDate(ts) {
 
 .strategy-detail-pane {
   min-width: 0;
-  padding: 15px 16px 18px;
-  background: #ffffff;
+  padding: 15px 16px 16px;
 }
 
 .strategy-detail-header {
   justify-content: space-between;
   gap: 16px;
   align-items: flex-start;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #edf0f3;
 }
 
 .strategy-title-copy {
   min-width: 0;
 }
 
+.strategy-title-line {
+  min-width: 0;
+}
+
+.strategy-description {
+  display: block;
+  max-width: 920px;
+  margin-top: 6px;
+  line-height: 1.55;
+}
+
+.strategy-actions {
+  flex: 0 0 auto;
+}
+
 .strategy-metrics {
   grid-template-columns: repeat(6, minmax(0, 1fr));
-  margin-top: 14px;
+  margin-top: 12px;
   border: 1px solid #e7eaee;
   border-radius: 4px;
 }
@@ -2232,6 +2456,7 @@ function formatDate(ts) {
   padding: 11px 12px 5px;
   border: 1px solid #e7eaee;
   border-radius: 4px;
+  background: #ffffff;
 }
 
 .panel-heading {
@@ -2244,7 +2469,61 @@ function formatDate(ts) {
 
 .strategy-chart {
   width: 100%;
-  height: 230px;
+  height: 250px;
+}
+
+.strategy-detail-tabs {
+  overflow: hidden;
+  border: 1px solid #e7eaee;
+  border-radius: 4px;
+  background: #ffffff;
+}
+
+.strategy-detail-tabs :deep(.n-tabs-nav) {
+  padding: 0 12px;
+  background: #f8f9fb;
+}
+
+.strategy-detail-tabs :deep(.n-tab-pane) {
+  padding: 12px;
+}
+
+.strategy-table-shell {
+  max-height: min(48vh, 460px);
+  overflow: auto;
+}
+
+.compact-table-shell {
+  max-height: 340px;
+}
+
+.strategy-table-shell :deep(table) {
+  min-width: 980px;
+}
+
+.strategy-table-shell :deep(th) {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.strategy-data-table :deep(td),
+.strategy-data-table :deep(th) {
+  padding: 10px 11px;
+}
+
+.stock-name-cell {
+  min-width: 132px;
+}
+
+.number-cell {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.row-action-cell {
+  width: 34px;
+  text-align: center;
 }
 
 .trade-detail-row td {
@@ -2257,7 +2536,7 @@ function formatDate(ts) {
 }
 
 .monitor-summary {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   padding: 0;
 }
 
@@ -2371,8 +2650,8 @@ function formatDate(ts) {
     margin-left: 0;
   }
 
-  .strategy-workbench {
-    grid-template-columns: 250px minmax(0, 1fr);
+  .strategy-list {
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   }
 
   .strategy-metrics {
@@ -2386,7 +2665,7 @@ function formatDate(ts) {
 
 @media (max-width: 900px) {
   .prediction-factory {
-    padding: 0 10px 16px;
+    padding: 0 10px 88px;
   }
 
   .command-field,
@@ -2413,22 +2692,31 @@ function formatDate(ts) {
     border-bottom: 1px solid #e7eaee;
   }
 
-  .strategy-workbench {
-    grid-template-columns: 1fr;
-  }
-
-  .strategy-list-pane {
-    border-right: 0;
-    border-bottom: 1px solid #e2e6eb;
+  .strategy-rank-title,
+  .rank-title-meta {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .strategy-list {
-    max-height: 260px;
-    overflow-y: auto;
+    grid-template-columns: 1fr;
+  }
+
+  .strategy-item-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .strategy-detail-header {
     flex-direction: column;
+  }
+
+  .strategy-actions,
+  .strategy-actions :deep(.n-button) {
+    width: 100%;
+  }
+
+  .strategy-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .monitor-summary {

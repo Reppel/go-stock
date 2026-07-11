@@ -4,15 +4,19 @@ import "time"
 
 // PredictionSession 用户一次完整的预测请求
 type PredictionSession struct {
-	ID           uint      `json:"id" gorm:"primarykey" md:"-"`
-	Scene        string    `json:"scene" gorm:"size:50;index" md:"预测场景"` // 短线爆发/波段反弹/趋势持有
-	StockScope   string    `json:"stockScope" gorm:"size:100" md:"股票池"`  // 全市场/自选股/某分组
-	UniverseJSON string    `json:"universeJson" gorm:"type:text" md:"股票池快照JSON"`
-	StartDate    string    `json:"startDate" gorm:"size:10" md:"回测开始日期"` // 回测开始
-	EndDate      string    `json:"endDate" gorm:"size:10" md:"回测结束日期"`   // 回测结束
-	Status       string    `json:"status" gorm:"size:20" md:"状态"`        // running/done/failed
-	ErrorMsg     string    `json:"errorMsg" gorm:"size:500" md:"错误信息"`
-	CreatedAt    time.Time `json:"createdAt" gorm:"autoCreateTime" md:"-"`
+	ID              uint      `json:"id" gorm:"primarykey" md:"-"`
+	Scene           string    `json:"scene" gorm:"size:50;index" md:"预测场景"` // 短线爆发/波段反弹/趋势持有
+	StockScope      string    `json:"stockScope" gorm:"size:100" md:"股票池"`  // 全市场/自选股/某分组
+	UniverseJSON    string    `json:"universeJson" gorm:"type:text" md:"股票池快照JSON"`
+	StartDate       string    `json:"startDate" gorm:"size:10" md:"回测开始日期"` // 回测开始
+	EndDate         string    `json:"endDate" gorm:"size:10" md:"回测结束日期"`   // 回测结束
+	ResearchEndDate string    `json:"researchEndDate" gorm:"size:10" md:"研究窗口截止"`
+	AIConfigID      int       `json:"aiConfigId" md:"AI配置ID"`
+	MarketState     string    `json:"marketState" gorm:"size:30" md:"研究期市场状态"`
+	MarketReturn    float64   `json:"marketReturn" md:"研究期基准收益"`
+	Status          string    `json:"status" gorm:"size:20" md:"状态"` // running/done/failed
+	ErrorMsg        string    `json:"errorMsg" gorm:"size:500" md:"错误信息"`
+	CreatedAt       time.Time `json:"createdAt" gorm:"autoCreateTime" md:"-"`
 }
 
 func (PredictionSession) TableName() string {
@@ -21,37 +25,56 @@ func (PredictionSession) TableName() string {
 
 // PredictionHypothesis AI 生成的预测假设
 type PredictionHypothesis struct {
-	ID                   uint      `json:"id" gorm:"primarykey" md:"-"`
-	SessionID            uint      `json:"sessionId" gorm:"index" md:"会话ID"`
-	Name                 string    `json:"name" gorm:"size:100" md:"假设名称"`
-	Description          string    `json:"description" gorm:"size:500" md:"假设描述"`
-	Scene                string    `json:"scene" gorm:"size:50;index" md:"场景"`
-	RuleJSON             string    `json:"ruleJson" gorm:"type:text" md:"规则JSON"` // 可执行规则 JSON
-	Params               string    `json:"params" gorm:"type:text" md:"参数JSON"`   // 参数 JSON
-	TimeHorizon          int       `json:"timeHorizon" md:"持有周期"`                 // 持有周期（交易日）
-	TargetReturn         float64   `json:"targetReturn" md:"目标收益率"`               // 目标收益率
-	WinRate              float64   `json:"winRate" md:"历史胜率"`                     // 历史胜率
-	AvgReturn            float64   `json:"avgReturn" md:"平均收益"`                   // 平均收益
-	MaxDrawdown          float64   `json:"maxDrawdown" md:"最大回撤"`                 // 最大回撤
-	TradeCount           int       `json:"tradeCount" md:"历史交易次数"`                // 历史交易次数
-	TotalReturn          float64   `json:"totalReturn" md:"总收益"`
-	MedianReturn         float64   `json:"medianReturn" md:"中位收益"`
-	ProfitLossRatio      float64   `json:"profitLossRatio" md:"盈亏比"`
-	OutSampleAvgReturn   float64   `json:"outSampleAvgReturn" md:"样本外平均收益"`
-	OutSampleMaxDrawdown float64   `json:"outSampleMaxDrawdown" md:"样本外最大回撤"`
-	OutSampleTradeCount  int       `json:"outSampleTradeCount" md:"样本外交易次数"`
-	BenchmarkAvailable   bool      `json:"benchmarkAvailable" gorm:"default:false" md:"基准数据可用"`
-	DataCoverage         float64   `json:"dataCoverage" md:"数据覆盖率"`
-	NoLookaheadPassed    bool      `json:"noLookaheadPassed" gorm:"default:false" md:"未来函数检查"`
-	BacktestConfigJSON   string    `json:"backtestConfigJson" gorm:"type:text" md:"回测配置"`
-	GenerationSource     string    `json:"generationSource" gorm:"size:20" md:"生成来源"` // ai/template
-	SchemaVersion        string    `json:"schemaVersion" gorm:"size:50" md:"规则版本"`
-	StrategyVersion      string    `json:"strategyVersion" gorm:"size:50" md:"策略版本"`
-	FeatureVersion       string    `json:"featureVersion" gorm:"size:50" md:"特征版本"`
-	ValidReturn          float64   `json:"validReturn" md:"实际验证累计收益"`     // 实际验证累计收益
-	ValidCount           int       `json:"validCount" md:"实际验证次数"`        // 实际验证次数
-	Status               string    `json:"status" gorm:"size:20" md:"状态"` // draft/active/expired/disabled
-	CreatedAt            time.Time `json:"createdAt" gorm:"autoCreateTime" md:"-"`
+	ID                     uint       `json:"id" gorm:"primarykey" md:"-"`
+	SessionID              uint       `json:"sessionId" gorm:"index" md:"会话ID"`
+	Name                   string     `json:"name" gorm:"size:100" md:"假设名称"`
+	Description            string     `json:"description" gorm:"size:500" md:"假设描述"`
+	Scene                  string     `json:"scene" gorm:"size:50;index" md:"场景"`
+	RuleJSON               string     `json:"ruleJson" gorm:"type:text" md:"规则JSON"` // 可执行规则 JSON
+	Params                 string     `json:"params" gorm:"type:text" md:"参数JSON"`   // 参数 JSON
+	TimeHorizon            int        `json:"timeHorizon" md:"持有周期"`                 // 持有周期（交易日）
+	TargetReturn           float64    `json:"targetReturn" md:"目标收益率"`               // 目标收益率
+	WinRate                float64    `json:"winRate" md:"历史胜率"`                     // 历史胜率
+	AvgReturn              float64    `json:"avgReturn" md:"平均收益"`                   // 平均收益
+	MaxDrawdown            float64    `json:"maxDrawdown" md:"最大回撤"`                 // 最大回撤
+	TradeCount             int        `json:"tradeCount" md:"历史交易次数"`                // 历史交易次数
+	TotalReturn            float64    `json:"totalReturn" md:"总收益"`
+	MedianReturn           float64    `json:"medianReturn" md:"中位收益"`
+	ProfitLossRatio        float64    `json:"profitLossRatio" md:"盈亏比"`
+	ProfitLossRatioStatus  string     `json:"profitLossRatioStatus" gorm:"size:30" md:"盈亏比状态"`
+	OutSampleAvgReturn     float64    `json:"outSampleAvgReturn" md:"样本外平均收益"`
+	OutSampleMaxDrawdown   float64    `json:"outSampleMaxDrawdown" md:"样本外最大回撤"`
+	OutSampleTradeCount    int        `json:"outSampleTradeCount" md:"样本外交易次数"`
+	BenchmarkAvailable     bool       `json:"benchmarkAvailable" gorm:"default:false" md:"基准数据可用"`
+	BenchmarkReturn        float64    `json:"benchmarkReturn" md:"基准收益"`
+	ExcessReturn           float64    `json:"excessReturn" md:"超额收益"`
+	DataCoverage           float64    `json:"dataCoverage" md:"数据覆盖率"`
+	NoLookaheadPassed      bool       `json:"noLookaheadPassed" gorm:"default:false" md:"未来函数检查"`
+	BacktestConfigJSON     string     `json:"backtestConfigJson" gorm:"type:text" md:"回测配置"`
+	VerdictJSON            string     `json:"verdictJson" gorm:"type:text" md:"量化裁决JSON"`
+	GenerationSource       string     `json:"generationSource" gorm:"size:20" md:"生成来源"` // ai/template
+	SchemaVersion          string     `json:"schemaVersion" gorm:"size:50" md:"规则版本"`
+	RegistryVersion        string     `json:"registryVersion" gorm:"size:50" md:"指标注册表版本"`
+	EngineVersion          string     `json:"engineVersion" gorm:"size:50" md:"回测引擎版本"`
+	StrategyVersion        string     `json:"strategyVersion" gorm:"size:50" md:"策略版本"`
+	FeatureVersion         string     `json:"featureVersion" gorm:"size:50" md:"特征版本"`
+	LastVerdictStatus      string     `json:"lastVerdictStatus" gorm:"size:30;index" md:"最近裁决状态"`
+	PaperTradeStartedAt    *time.Time `json:"paperTradeStartedAt" md:"模拟盘开始时间"`
+	PaperTradeDays         int        `json:"paperTradeDays" md:"前向验证交易日"`
+	PaperTradeCount        int        `json:"paperTradeCount" md:"前向验证已完成交易"`
+	PaperNav               float64    `json:"paperNav" md:"前向验证净值"`
+	PaperMaxDrawdown       float64    `json:"paperMaxDrawdown" md:"前向验证最大回撤"`
+	PaperCash              float64    `json:"paperCash" md:"前向验证现金"`
+	PaperMarketValue       float64    `json:"paperMarketValue" md:"前向验证持仓市值"`
+	PaperPositionCount     int        `json:"paperPositionCount" md:"前向验证持仓数"`
+	PaperReady             bool       `json:"paperReady" gorm:"default:false" md:"是否达到正式监控门槛"`
+	PaperReadyReason       string     `json:"paperReadyReason" gorm:"size:300" md:"正式监控门槛说明"`
+	PaperLastProcessedDate string     `json:"paperLastProcessedDate" gorm:"size:10" md:"前向验证最近处理交易日"`
+	ReviewDueAt            *time.Time `json:"reviewDueAt" md:"复审时间"`
+	ValidReturn            float64    `json:"validReturn" md:"实际验证累计收益"`     // 实际验证累计收益
+	ValidCount             int        `json:"validCount" md:"实际验证次数"`        // 实际验证次数
+	Status                 string     `json:"status" gorm:"size:20" md:"状态"` // draft/active/expired/disabled
+	CreatedAt              time.Time  `json:"createdAt" gorm:"autoCreateTime" md:"-"`
 }
 
 func (PredictionHypothesis) TableName() string {
@@ -76,7 +99,8 @@ type PredictionDecision struct {
 	QualityRating         string    `json:"qualityRating" gorm:"size:20" md:"回测质量"`
 	RiskLevel             string    `json:"riskLevel" gorm:"size:20" md:"风险等级"`
 	Score                 float64   `json:"score" md:"综合评分"`
-	Probability           float64   `json:"probability" md:"校准后上涨概率"`
+	Probability           float64   `json:"probability" md:"经验后验胜率"`
+	ProbabilityMethod     string    `json:"probabilityMethod" gorm:"size:40" md:"概率估计方法"`
 	ExpectedReturn        float64   `json:"expectedReturn" md:"预期净收益"`
 	CurrentPrice          float64   `json:"currentPrice" md:"当前价"`
 	ReferencePrice        float64   `json:"referencePrice" md:"特征参考价"`
@@ -182,6 +206,110 @@ type PredictionHypothesisDaily struct {
 func (PredictionHypothesisDaily) TableName() string {
 	return "prediction_hypothesis_daily"
 }
+
+// PredictionPaperAccount 是策略前向验证的独立模拟账户。
+type PredictionPaperAccount struct {
+	ID                uint      `json:"id" gorm:"primarykey"`
+	HypothesisID      uint      `json:"hypothesisId" gorm:"uniqueIndex"`
+	InitialCash       float64   `json:"initialCash"`
+	Cash              float64   `json:"cash"`
+	MarketValue       float64   `json:"marketValue"`
+	TotalValue        float64   `json:"totalValue"`
+	Nav               float64   `json:"nav"`
+	MaxNav            float64   `json:"maxNav"`
+	MaxDrawdown       float64   `json:"maxDrawdown"`
+	TradingDays       int       `json:"tradingDays"`
+	TradeCount        int       `json:"tradeCount"`
+	WinCount          int       `json:"winCount"`
+	PositionCount     int       `json:"positionCount"`
+	Status            string    `json:"status" gorm:"size:20;index"`
+	StartDate         string    `json:"startDate" gorm:"size:10"`
+	LastProcessedDate string    `json:"lastProcessedDate" gorm:"size:10;index"`
+	CreatedAt         time.Time `json:"createdAt" gorm:"autoCreateTime"`
+	UpdatedAt         time.Time `json:"updatedAt" gorm:"autoUpdateTime"`
+}
+
+func (PredictionPaperAccount) TableName() string { return "prediction_paper_account" }
+
+// PredictionPaperPosition 保存前向验证中的真实模拟持仓。
+type PredictionPaperPosition struct {
+	ID                uint      `json:"id" gorm:"primarykey"`
+	AccountID         uint      `json:"accountId" gorm:"index;uniqueIndex:uidx_paper_position_account_stock"`
+	HypothesisID      uint      `json:"hypothesisId" gorm:"index"`
+	SignalID          uint      `json:"signalId" gorm:"index"`
+	StockCode         string    `json:"stockCode" gorm:"size:20;index;uniqueIndex:uidx_paper_position_account_stock"`
+	StockName         string    `json:"stockName" gorm:"size:50"`
+	SignalDate        string    `json:"signalDate" gorm:"size:10"`
+	EntryDate         string    `json:"entryDate" gorm:"size:10"`
+	EntryPrice        float64   `json:"entryPrice"`
+	AvgCost           float64   `json:"avgCost"`
+	CostAmount        float64   `json:"costAmount"`
+	EntryFee          float64   `json:"entryFee"`
+	EntrySlippage     float64   `json:"entrySlippage"`
+	Quantity          float64   `json:"quantity"`
+	MaxPrice          float64   `json:"maxPrice"`
+	MinPrice          float64   `json:"minPrice"`
+	LastPrice         float64   `json:"lastPrice"`
+	BuyDayIndex       int       `json:"buyDayIndex"`
+	PendingExitReason string    `json:"pendingExitReason" gorm:"size:40"`
+	EntryReasonJSON   string    `json:"entryReasonJson" gorm:"type:text"`
+	FeatureVersion    string    `json:"featureVersion" gorm:"size:50"`
+	DataAsOf          time.Time `json:"dataAsOf"`
+	CreatedAt         time.Time `json:"createdAt" gorm:"autoCreateTime"`
+	UpdatedAt         time.Time `json:"updatedAt" gorm:"autoUpdateTime"`
+}
+
+func (PredictionPaperPosition) TableName() string { return "prediction_paper_position" }
+
+// PredictionPaperTrade 保存前向验证的闭合交易及完整成本归因。
+type PredictionPaperTrade struct {
+	ID              uint      `json:"id" gorm:"primarykey"`
+	AccountID       uint      `json:"accountId" gorm:"index"`
+	HypothesisID    uint      `json:"hypothesisId" gorm:"index"`
+	SignalID        uint      `json:"signalId" gorm:"index"`
+	StockCode       string    `json:"stockCode" gorm:"size:20;index"`
+	StockName       string    `json:"stockName" gorm:"size:50"`
+	SignalDate      string    `json:"signalDate" gorm:"size:10"`
+	BuyDate         string    `json:"buyDate" gorm:"size:10"`
+	SellDate        string    `json:"sellDate" gorm:"size:10;index"`
+	BuyPrice        float64   `json:"buyPrice"`
+	SellPrice       float64   `json:"sellPrice"`
+	Quantity        float64   `json:"quantity"`
+	GrossBuyAmount  float64   `json:"grossBuyAmount"`
+	GrossSellAmount float64   `json:"grossSellAmount"`
+	Fee             float64   `json:"fee"`
+	Slippage        float64   `json:"slippage"`
+	ReturnRate      float64   `json:"returnRate"`
+	MaxReturn       float64   `json:"maxReturn"`
+	MaxDrawdown     float64   `json:"maxDrawdown"`
+	HoldDays        int       `json:"holdDays"`
+	ExitReason      string    `json:"exitReason" gorm:"size:40"`
+	EntryReasonJSON string    `json:"entryReasonJson" gorm:"type:text"`
+	FeatureVersion  string    `json:"featureVersion" gorm:"size:50"`
+	DataAsOf        time.Time `json:"dataAsOf"`
+	CreatedAt       time.Time `json:"createdAt" gorm:"autoCreateTime"`
+}
+
+func (PredictionPaperTrade) TableName() string { return "prediction_paper_trade" }
+
+// PredictionPaperDaily 保存每个交易日收盘后的账户快照。
+type PredictionPaperDaily struct {
+	ID            uint      `json:"id" gorm:"primarykey"`
+	AccountID     uint      `json:"accountId" gorm:"index;uniqueIndex:uidx_paper_daily_account_date"`
+	HypothesisID  uint      `json:"hypothesisId" gorm:"index"`
+	Date          string    `json:"date" gorm:"size:10;index;uniqueIndex:uidx_paper_daily_account_date"`
+	Cash          float64   `json:"cash"`
+	MarketValue   float64   `json:"marketValue"`
+	TotalValue    float64   `json:"totalValue"`
+	Nav           float64   `json:"nav"`
+	Drawdown      float64   `json:"drawdown"`
+	PositionCount int       `json:"positionCount"`
+	TradeCount    int       `json:"tradeCount"`
+	CreatedAt     time.Time `json:"createdAt" gorm:"autoCreateTime"`
+	UpdatedAt     time.Time `json:"updatedAt" gorm:"autoUpdateTime"`
+}
+
+func (PredictionPaperDaily) TableName() string { return "prediction_paper_daily" }
 
 // StockFeature 预计算的股票特征，每天收盘后更新
 type StockFeature struct {
@@ -301,17 +429,45 @@ func (TradeDecisionLog) TableName() string {
 }
 
 type PredictionGenerationAudit struct {
-	ID            uint      `json:"id" gorm:"primarykey"`
-	SessionID     uint      `json:"sessionId" gorm:"index"`
-	Source        string    `json:"source" gorm:"size:30"` // ai / template / validator
-	RawOutput     string    `json:"rawOutput" gorm:"type:text"`
-	ErrorJSON     string    `json:"errorJson" gorm:"type:text"`
-	SchemaVersion string    `json:"schemaVersion" gorm:"size:50"`
-	CreatedAt     time.Time `json:"createdAt" gorm:"autoCreateTime"`
+	ID              uint      `json:"id" gorm:"primarykey"`
+	SessionID       uint      `json:"sessionId" gorm:"index"`
+	Source          string    `json:"source" gorm:"size:30"` // ai / template / validator
+	Prompt          string    `json:"prompt" gorm:"type:text"`
+	RawOutput       string    `json:"rawOutput" gorm:"type:text"`
+	NormalizedDSL   string    `json:"normalizedDsl" gorm:"type:text"`
+	ToolCallsJSON   string    `json:"toolCallsJson" gorm:"type:text"`
+	AIConfigID      int       `json:"aiConfigId"`
+	ModelName       string    `json:"modelName" gorm:"size:100"`
+	Temperature     float64   `json:"temperature"`
+	ErrorJSON       string    `json:"errorJson" gorm:"type:text"`
+	SchemaVersion   string    `json:"schemaVersion" gorm:"size:50"`
+	RegistryVersion string    `json:"registryVersion" gorm:"size:50"`
+	EngineVersion   string    `json:"engineVersion" gorm:"size:50"`
+	CreatedAt       time.Time `json:"createdAt" gorm:"autoCreateTime"`
 }
 
 func (PredictionGenerationAudit) TableName() string {
 	return "prediction_generation_audit"
+}
+
+type PredictionResearchIdea struct {
+	ID               uint      `json:"id" gorm:"primarykey"`
+	SessionID        uint      `json:"sessionId" gorm:"index"`
+	Source           string    `json:"source" gorm:"size:30;index"`
+	Scene            string    `json:"scene" gorm:"size:50;index"`
+	StockScope       string    `json:"stockScope" gorm:"size:100"`
+	Theme            string    `json:"theme" gorm:"size:120"`
+	CandidateFactors string    `json:"candidateFactors" gorm:"type:text"`
+	RuleIdeas        string    `json:"ruleIdeas" gorm:"type:text"`
+	DataEvidence     string    `json:"dataEvidence" gorm:"type:text"`
+	RiskHypotheses   string    `json:"riskHypotheses" gorm:"type:text"`
+	Questions        string    `json:"questions" gorm:"type:text"`
+	Status           string    `json:"status" gorm:"size:20;index"`
+	CreatedAt        time.Time `json:"createdAt" gorm:"autoCreateTime"`
+}
+
+func (PredictionResearchIdea) TableName() string {
+	return "prediction_research_idea"
 }
 
 type MarketFactorDaily struct {

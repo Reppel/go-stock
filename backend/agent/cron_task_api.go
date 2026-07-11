@@ -699,14 +699,14 @@ func (a *CronTaskApi) executePredictionValidateSignals(ctx context.Context, task
 	if err != nil {
 		return err
 	}
-	if result.Pending == 0 {
-		return skipTask("没有待验证信号")
+	if result.Accounts == 0 {
+		return skipTask("没有前向验证或正式监控账户")
 	}
-	if result.Entered+result.Missed+result.Validated == 0 {
-		return skipTask(fmt.Sprintf("%d 条信号仍等待后续交易日数据", result.Waiting))
+	if result.ProcessedDays == 0 {
+		return skipTask("模拟账户已是最新交易日状态")
 	}
-	logger.SugaredLogger.Infof("预测工厂信号验证完成：待处理 %d，入场 %d，错过 %d，验证 %d，等待 %d",
-		result.Pending, result.Entered, result.Missed, result.Validated, result.Waiting)
+	logger.SugaredLogger.Infof("预测工厂前向验证完成：账户 %d，推进交易日 %d，待处理 %d，入场 %d，错过 %d，平仓 %d",
+		result.Accounts, result.ProcessedDays, result.Pending, result.Entered, result.Missed, result.Validated)
 	return nil
 }
 

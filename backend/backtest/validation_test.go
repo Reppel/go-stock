@@ -59,6 +59,7 @@ func TestMonitorReadinessRequiresBenchmarkAndCurrentVersions(t *testing.T) {
 		t.Fatal("missing benchmark data must block formal monitoring")
 	}
 	hypothesis.BenchmarkAvailable = true
+	hypothesis.ExcessReturn = 0.01
 	if !hypothesisMonitorReady(hypothesis) {
 		t.Fatal("a hypothesis passing every strict gate should be monitor-ready")
 	}
@@ -73,6 +74,53 @@ func TestRuleValidationRejectsIndicatorUnitMismatch(t *testing.T) {
 	errs := ValidateHypothesisRule(rule)
 	if len(errs) == 0 {
 		t.Fatal("KDJ oscillator must not be compared with a price moving average")
+	}
+}
+
+func TestIndicatorRegistrySeparatesActiveAndCandidate(t *testing.T) {
+	active := QueryIndicatorRegistry(IndicatorQuery{Status: "active"})
+	candidates := QueryIndicatorRegistry(IndicatorQuery{Status: "candidate"})
+	if len(active) == 0 || len(candidates) == 0 {
+		t.Fatalf("expected both active and candidate indicators, active=%d candidate=%d", len(active), len(candidates))
+	}
+	for _, indicator := range active {
+		if indicator.Source != "feature" {
+			t.Fatalf("only stock_feature indicators should be active in current executor, got %+v", indicator)
+		}
+	}
+}
+
+func TestRuleEnvelopeV2CompilesToLegacyRule(t *testing.T) {
+	rule := Rule{
+		EntryConditions: []Condition{{Indicator: "MA5", Operator: "cross_up", Ref: "MA20"}},
+		ExitConditions:  []Condition{{Indicator: "MA5", Operator: "cross_down", Ref: "MA20"}},
+		StopLoss:        0.07, StopGain: 0.12, MaxHoldDays: 5, MaxHoldings: 5,
+	}
+	raw := RuleToJSON(rule)
+	compiled, err := JSONToRule(raw)
+	if err != nil {
+		t.Fatalf("v2 envelope should compile: %v", err)
+	}
+	if len(compiled.EntryConditions) != 2 || compiled.EntryConditions[0].Lag != 1 || compiled.EntryConditions[1].Lag != 0 ||
+		compiled.EntryConditions[0].Indicator != "MA5" || compiled.EntryConditions[0].Ref != "MA20" {
+		t.Fatalf("unexpected compiled rule: %+v", compiled)
+	}
+}
+
+func TestProfitLossRatioReportsNoLossStatus(t *testing.T) {
+	result := new(WalkForwardValidator).calculateMetrics(
+		[]Trade{{ReturnRate: 0.01, Hit: true}, {ReturnRate: 0.02, Hit: true}},
+		[]DailyNav{{Date: "2026-01-01", Nav: 1}, {Date: "2026-01-02", Nav: 1.02}},
+	)
+	if result.ProfitLossRatioStatus != "no_loss" || result.ProfitLossRatio != 0 {
+		t.Fatalf("expected no_loss semantic status, got ratio=%v status=%s", result.ProfitLossRatio, result.ProfitLossRatioStatus)
+	}
+}
+
+func TestPositionSizerDoesNotDefaultToOneLotWithoutAccount(t *testing.T) {
+	sizing := NewPositionSizer().Size("BUY", 20, 10, 0, 0)
+	if sizing.SuggestedQuantity != 0 || sizing.AccountWarning == "" {
+		t.Fatalf("missing account constraints must not create a one-lot buy: %+v", sizing)
 	}
 }
 

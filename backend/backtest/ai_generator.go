@@ -12,18 +12,11 @@ import (
 
 // HypothesisTemplate 预测假设模板
 type HypothesisTemplate struct {
-	ID          string      `json:"id"`
-	Name        string      `json:"name"`
-	Scenes      []string    `json:"scenes"`
-	Description string      `json:"description"`
-	BaseRule    Rule        `json:"baseRule"`
-	Variations  []Variation `json:"variations"`
-}
-
-// Variation 参数变体
-type Variation struct {
-	Param  string `json:"param"`
-	Values []any  `json:"values"`
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Scenes      []string `json:"scenes"`
+	Description string   `json:"description"`
+	BaseRule    Rule     `json:"baseRule"`
 }
 
 // Hypothesis AI 生成的预测假设
@@ -47,9 +40,18 @@ type MarketContext struct {
 
 // AIGenerator AI 假设生成器
 type AIGenerator struct {
-	openaiApi interface{}
-	templates []HypothesisTemplate
+	openaiApi           interface{}
+	templates           []HypothesisTemplate
+	lastPrompt          string
+	lastRawOutput       string
+	lastModelName       string
+	lastTemperature     float64
+	lastGenerationError string
 }
+
+const (
+	maxGeneratedHypotheses = 4
+)
 
 // NewAIGenerator 创建生成器
 func NewAIGenerator() *AIGenerator {
@@ -78,10 +80,6 @@ func LoadHypothesisTemplates() []HypothesisTemplate {
 				StopGain:    0.15,
 				MaxHoldings: 5,
 			},
-			Variations: []Variation{
-				{Param: "timeHorizon", Values: []any{3, 5, 10}},
-				{Param: "targetReturn", Values: []any{0.03, 0.05, 0.08}},
-			},
 		},
 		{
 			ID:          "rsi_oversold_rebound",
@@ -99,10 +97,6 @@ func LoadHypothesisTemplates() []HypothesisTemplate {
 				StopLoss:    0.05,
 				StopGain:    0.10,
 				MaxHoldings: 5,
-			},
-			Variations: []Variation{
-				{Param: "timeHorizon", Values: []any{5, 10, 15}},
-				{Param: "targetReturn", Values: []any{0.03, 0.05, 0.08}},
 			},
 		},
 		{
@@ -122,10 +116,6 @@ func LoadHypothesisTemplates() []HypothesisTemplate {
 				StopGain:    0.12,
 				MaxHoldings: 5,
 			},
-			Variations: []Variation{
-				{Param: "timeHorizon", Values: []any{3, 5}},
-				{Param: "targetReturn", Values: []any{0.03, 0.05}},
-			},
 		},
 		{
 			ID:          "macd_golden_cross",
@@ -144,10 +134,6 @@ func LoadHypothesisTemplates() []HypothesisTemplate {
 				StopGain:    0.12,
 				MaxHoldings: 5,
 			},
-			Variations: []Variation{
-				{Param: "timeHorizon", Values: []any{5, 10}},
-				{Param: "targetReturn", Values: []any{0.04, 0.08}},
-			},
 		},
 	}
 }
@@ -163,14 +149,43 @@ func (g *AIGenerator) Generate(scene string, stockScope string, ctx MarketContex
 	// 2. 根据市场环境调整描述
 	candidates = g.applyMarketContext(candidates, ctx)
 
-	// 3. 生成参数变体
-	var hypotheses []Hypothesis
+	// 3. 一个模板家族只生成一个可执行策略。参数变化属于稳定性测试，
+	// 不作为独立策略落库，也不参与多策略投票。
+	hypotheses := make([]Hypothesis, 0, len(candidates))
 	for _, tpl := range candidates {
-		variants := g.generateVariants(tpl)
-		hypotheses = append(hypotheses, variants...)
+		hypotheses = append(hypotheses, g.generateCanonicalHypothesis(tpl, scene))
 	}
 
-	return hypotheses, nil
+	return deduplicateHypotheses(hypotheses, maxGeneratedHypotheses), nil
+}
+
+func (g *AIGenerator) generateCanonicalHypothesis(tpl HypothesisTemplate, scene string) Hypothesis {
+	timeHorizon, targetReturn := canonicalTemplateParameters(tpl.ID, scene)
+	rule := tpl.BaseRule
+	rule.MaxHoldDays = timeHorizon
+	rule.StopGain = targetReturn
+	params := map[string]any{"timeHorizon": timeHorizon, "targetReturn": targetReturn}
+	return Hypothesis{
+		ID: tpl.ID, Name: tpl.Name, Description: g.renderDescription(tpl.Description, params),
+		Scene: scene, Rule: rule, Params: g.paramsToJSON(params), TimeHorizon: timeHorizon,
+		TargetReturn: targetReturn, Source: "template",
+	}
+}
+
+func canonicalTemplateParameters(templateID, scene string) (int, float64) {
+	switch templateID {
+	case "rsi_oversold_rebound":
+		return 10, 0.05
+	case "boll_breakout":
+		return 5, 0.05
+	case "trend_following_ma", "macd_golden_cross":
+		if scene == "趋势持有" {
+			return 10, 0.08
+		}
+		return 5, 0.05
+	default:
+		return 5, 0.05
+	}
 }
 
 // selectTemplates 按场景筛选模板
@@ -200,49 +215,24 @@ func (g *AIGenerator) applyMarketContext(templates []HypothesisTemplate, ctx Mar
 	return templates
 }
 
-// generateVariants 生成参数变体
-func (g *AIGenerator) generateVariants(tpl HypothesisTemplate) []Hypothesis {
-	var hypotheses []Hypothesis
-
-	// 默认一套参数
-	defaultParams := map[string]any{
-		"timeHorizon":  5,
-		"targetReturn": 0.05,
-	}
-
-	// 如果有变体参数，取第一个值组合
-	if len(tpl.Variations) > 0 {
-		for _, v := range tpl.Variations {
-			if len(v.Values) > 0 {
-				defaultParams[v.Param] = v.Values[0]
-			}
+func deduplicateHypotheses(hypotheses []Hypothesis, limit int) []Hypothesis {
+	result := make([]Hypothesis, 0, len(hypotheses))
+	seen := make(map[string]struct{}, len(hypotheses))
+	for _, hypothesis := range hypotheses {
+		key := ruleExecutionFingerprint(hypothesis.Rule)
+		if key == "" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, hypothesis)
+		if limit > 0 && len(result) >= limit {
+			break
 		}
 	}
-
-	timeHorizon := 5
-	targetReturn := 0.05
-
-	if v, ok := defaultParams["timeHorizon"].(int); ok {
-		timeHorizon = v
-	}
-	if v, ok := defaultParams["targetReturn"].(float64); ok {
-		targetReturn = v
-	}
-
-	description := g.renderDescription(tpl.Description, defaultParams)
-
-	h := Hypothesis{
-		ID:           fmt.Sprintf("%s_default", tpl.ID),
-		Name:         tpl.Name,
-		Description:  description,
-		Scene:        tpl.Scenes[0],
-		Rule:         tpl.BaseRule,
-		Params:       g.paramsToJSON(defaultParams),
-		TimeHorizon:  timeHorizon,
-		TargetReturn: targetReturn,
-		Source:       "template",
-	}
-	return append(hypotheses, h)
+	return result
 }
 
 // renderDescription 渲染描述
@@ -263,31 +253,49 @@ func (g *AIGenerator) paramsToJSON(params map[string]any) string {
 
 // GenerateWithAI 调用 LLM 生成假设
 func (g *AIGenerator) GenerateWithAI(scene string, stockScope string, ctx MarketContext, aiConfigId int) (hypotheses []Hypothesis, err error) {
+	return g.GenerateWithAIWithResearch(scene, stockScope, ctx, aiConfigId, nil)
+}
+
+// GenerateWithAIWithResearch 只允许 AI 基于标准化研究想法生成规则；模板降级仍保持可用。
+func (g *AIGenerator) GenerateWithAIWithResearch(scene string, stockScope string, ctx MarketContext, aiConfigId int, researchIdeas []ResearchIdea) (hypotheses []Hypothesis, err error) {
 	if g == nil {
 		return nil, fmt.Errorf("AI 生成器未初始化")
 	}
 	defer func() {
 		if r := recover(); r != nil {
 			logger.SugaredLogger.Errorf("prediction GenerateWithAI panic: %v", r)
+			g.lastGenerationError = fmt.Sprintf("AI 生成异常: %v", r)
 			hypotheses, err = g.Generate(scene, stockScope, ctx)
 		}
 	}()
-	return g.callLLM(scene, stockScope, ctx, aiConfigId)
+	return g.callLLM(scene, stockScope, ctx, aiConfigId, researchIdeas)
 }
 
-func (g *AIGenerator) callLLM(scene string, stockScope string, ctx MarketContext, aiConfigId int) ([]Hypothesis, error) {
+func (g *AIGenerator) callLLM(scene string, stockScope string, ctx MarketContext, aiConfigId int, researchIdeas []ResearchIdea) ([]Hypothesis, error) {
+	g.lastModelName = ""
+	g.lastTemperature = 0
+	g.lastGenerationError = ""
 	// 如果没有配置 AI，回退到模板
 	if aiConfigId <= 0 {
+		g.lastGenerationError = "aiConfigId 无效，使用模板"
 		logger.SugaredLogger.Info("aiConfigId 无效，fallback 到模板生成")
 		return g.Generate(scene, stockScope, ctx)
 	}
+	if len(researchIdeas) == 0 {
+		return nil, fmt.Errorf("AI 策略生成必须先产出 ResearchIdea v2")
+	}
 
-	prompt := g.buildLLMPrompt(scene, stockScope, ctx)
+	prompt := g.buildLLMPrompt(scene, stockScope, ctx, researchIdeas)
+	g.lastPrompt = prompt
+	g.lastRawOutput = ""
 
 	llmCtx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	openAi := data.NewDeepSeekOpenAi(llmCtx, aiConfigId)
+	g.lastModelName = openAi.Model
+	g.lastTemperature = openAi.Temperature
 	if strings.TrimSpace(openAi.BaseUrl) == "" || strings.TrimSpace(openAi.ApiKey) == "" || strings.TrimSpace(openAi.Model) == "" {
+		g.lastGenerationError = "AI 配置不完整，使用模板"
 		logger.SugaredLogger.Warn("AI 配置不完整，fallback 到模板生成")
 		return g.Generate(scene, stockScope, ctx)
 	}
@@ -330,13 +338,16 @@ done:
 				content.WriteString(c)
 			}
 		case <-timeout:
+			g.lastGenerationError = "LLM 生成假设超时，使用模板"
 			logger.SugaredLogger.Warn("LLM 生成假设超时，fallback 到模板")
 			return g.Generate(scene, stockScope, ctx)
 		}
 	}
 
 	result := content.String()
+	g.lastRawOutput = result
 	if result == "" {
+		g.lastGenerationError = firstNonBlank(streamErr, "LLM 返回为空，使用模板")
 		if streamErr != "" {
 			logger.SugaredLogger.Warnf("LLM 返回错误：%s，fallback 到模板", streamErr)
 		}
@@ -346,11 +357,13 @@ done:
 
 	hypotheses, err := g.parseLLMResponse(result, scene)
 	if err != nil {
+		g.lastGenerationError = err.Error()
 		logger.SugaredLogger.Warnf("解析 LLM 假设失败: %v, fallback 到模板", err)
 		return g.Generate(scene, stockScope, ctx)
 	}
 
 	if len(hypotheses) == 0 {
+		g.lastGenerationError = "LLM 未生成有效假设，使用模板"
 		logger.SugaredLogger.Warn("LLM 未生成有效假设，fallback 到模板")
 		return g.Generate(scene, stockScope, ctx)
 	}
@@ -359,7 +372,7 @@ done:
 	return hypotheses, nil
 }
 
-func (g *AIGenerator) buildLLMPrompt(scene string, stockScope string, ctx MarketContext) string {
+func (g *AIGenerator) buildLLMPrompt(scene string, stockScope string, ctx MarketContext, researchIdeas []ResearchIdea) string {
 	templateExamples := g.templates
 	var examples []string
 	for _, tpl := range templateExamples {
@@ -371,45 +384,51 @@ func (g *AIGenerator) buildLLMPrompt(scene string, stockScope string, ctx Market
 		)
 		examples = append(examples, example)
 	}
+	indicatorIDs := strings.Join(sortedIndicatorIDs(), ", ")
+	researchJSON, _ := json.Marshal(researchIdeas)
 
-	return fmt.Sprintf(`你是一位资深量化策略研究员。请根据以下信息，设计 2-4 个量化交易规则（Hypothesis）。
+	return fmt.Sprintf(`你是一位资深量化策略研究员。请根据以下信息，设计 1-4 个互不重复的量化交易规则（Hypothesis）。参数扰动不算新策略。
 
 【投资场景】%s
 【股票池】%s
 【市场环境】%s（上证指数区间收益率 %.2f%%）
 
-【可用技术指标】
-MA5, MA10, MA20, MA60, MACD, RSI6, RSI12, KDJ_K, BOLLUpper, BOLLMid, BOLLLower, VolumeRatio, ATR, ChangeRate5, ChangeRate20, Close, Open, High, Low, Volume
+【标准研究想法 ResearchIdea v2】
+%s
 
-【条件运算符】>, >=, <, <=, ==, !=, cross_up, cross_down
+【可用指标注册表】
+只能引用以下 indicatorId，禁止编造新指标：
+%s
+
+【条件运算符】>, >=, <, <=, ==, !=；exit 可使用带显式 previousLeft/previousRight 的 cross_down
 
 【参考策略模板】
 %s
 
-请直接返回一个 JSON 数组，每个元素包含以下字段：
+请直接返回一个 JSON 数组，每个元素优先使用 prediction-rule/v2 envelope：
 {
+  "schemaVersion": "prediction-rule/v2",
+  "registryVersion": "indicator-registry/v2",
+  "featureVersion": "daily_v2_qfq",
+  "engineVersion": "quant-engine/v3",
   "name": "策略名称",
   "description": "策略描述",
   "scene": "%s",
   "timeHorizon": 5,
   "targetReturn": 0.05,
-  "rule": {
-    "entryConditions": [{"indicator": "MA5", "operator": ">", "ref": "MA20"}],
-    "exitConditions": [{"indicator": "MA5", "operator": "<", "ref": "MA20"}],
-    "stopLoss": 0.07,
-    "stopGain": 0.15,
-    "maxHoldDays": 5,
-    "maxHoldings": 5
-  }
+  "entry": {"all": [{"left": {"indicatorId": "stock_feature.MA5", "lag": 1}, "operator": "<=", "right": {"indicatorId": "stock_feature.MA20", "lag": 1}}, {"left": {"indicatorId": "stock_feature.MA5", "lag": 0}, "operator": ">", "right": {"indicatorId": "stock_feature.MA20", "lag": 0}}]},
+  "exit": {"any": [{"left": {"indicatorId": "stock_feature.MA5", "lag": 0}, "operator": "cross_down", "right": {"indicatorId": "stock_feature.MA20", "lag": 0}, "previousLeft": {"indicatorId": "stock_feature.MA5", "lag": 1}, "previousRight": {"indicatorId": "stock_feature.MA20", "lag": 1}}]},
+  "risk": {"stopLoss": 0.07, "stopGain": 0.15, "maxHoldDays": 5, "maxHoldings": 5}
 }
 
 注意：
 1. 只返回 JSON 数组，不要任何解释或 markdown 代码块。
 2. 策略要适合当前投资场景。
-3. indicator 必须是可用技术指标之一。
-4. 当条件需要参考另一个指标时用 ref，用具体数值时用 value（数字）。
-5. “上穿/金叉”必须使用 cross_up，“下穿/死叉”必须使用 cross_down，不能用简单的大于或小于替代。`,
-		scene, stockScope, ctx.MarketState, ctx.ShIndexReturn*100, strings.Join(examples, "\n"), scene)
+3. indicatorId 必须来自指标注册表。
+4. lag=0 表示信号日收盘后可得值；lag=1 表示上一交易日值。
+5. entry 的“上穿/金叉”必须显式写成 lag=1 的 <= 与 lag=0 的 > 两个 all 条件；exit 的下穿必须在单个 cross_down 条件中显式给出 previousLeft/previousRight，禁止隐式 previous。
+6. 规则必须能追溯到上面的 ResearchIdea v2，不得引用研究模板之外的候选数据。`,
+		scene, stockScope, ctx.MarketState, ctx.ShIndexReturn*100, string(researchJSON), indicatorIDs, strings.Join(examples, "\n"), scene)
 }
 
 func (g *AIGenerator) formatConditions(conditions []Condition) string {
@@ -447,17 +466,25 @@ func (g *AIGenerator) parseLLMResponse(result, scene string) ([]Hypothesis, erro
 		timeHorizon := getInt(item, "timeHorizon")
 		targetReturn := getFloat64(item, "targetReturn")
 
-		ruleMap, ok := item["rule"].(map[string]any)
-		if !ok {
-			continue
-		}
-
-		// 重新序列化 rule
-		ruleJSON, _ := json.Marshal(ruleMap)
 		var rule Rule
-		if err := json.Unmarshal(ruleJSON, &rule); err != nil {
-			logger.SugaredLogger.Warnf("解析 rule 失败: %v", err)
-			continue
+		if schema := getString(item, "schemaVersion"); schema != "" {
+			envelopeJSON, _ := json.Marshal(item)
+			parsed, _, errs := ParseRuleEnvelope(string(envelopeJSON))
+			if len(errs) > 0 || parsed == nil {
+				logger.SugaredLogger.Warnf("解析 RuleEnvelope 失败: %+v", errs)
+				continue
+			}
+			rule = *parsed
+		} else {
+			ruleMap, ok := item["rule"].(map[string]any)
+			if !ok {
+				continue
+			}
+			ruleJSON, _ := json.Marshal(ruleMap)
+			if err := json.Unmarshal(ruleJSON, &rule); err != nil {
+				logger.SugaredLogger.Warnf("解析 rule 失败: %v", err)
+				continue
+			}
 		}
 
 		if name == "" {
@@ -480,7 +507,7 @@ func (g *AIGenerator) parseLLMResponse(result, scene string) ([]Hypothesis, erro
 		})
 	}
 
-	return hypotheses, nil
+	return deduplicateHypotheses(hypotheses, maxGeneratedHypotheses), nil
 }
 
 func getString(m map[string]any, key string) string {

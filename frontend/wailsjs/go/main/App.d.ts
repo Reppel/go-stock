@@ -11,6 +11,8 @@ export function AbortChatWithAgent():Promise<void>;
 
 export function AbortSummaryStockNews():Promise<void>;
 
+export function ActivatePredictionHypothesis(arg1:number):Promise<string>;
+
 export function AddAllStockInfo(arg1:models.AllStockInfo):Promise<string>;
 
 export function AddCronTask(arg1:data.FollowedStock):Promise<any>;
@@ -246,6 +248,8 @@ export function GetPredictionGenerationAudit(arg1:number):Promise<Array<models.P
 export function GetPredictionHypothesisDailyNAV(arg1:number):Promise<Array<models.PredictionHypothesisDaily>>;
 
 export function GetPredictionHypothesisStats(arg1:number):Promise<Record<string, any>>;
+
+export function GetPredictionPaperTradingDetails(arg1:number):Promise<Record<string, any>>;
 
 export function GetPredictionSession(arg1:number):Promise<Record<string, any>>;
 

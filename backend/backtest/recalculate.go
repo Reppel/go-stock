@@ -48,8 +48,8 @@ func (s *PredictionService) RecalculateSession(sessionID uint) (*models.Predicti
 
 	pending := make([]recalculatedHypothesis, 0, len(hypotheses))
 	for _, hypothesis := range hypotheses {
-		var rule Rule
-		if err := json.Unmarshal([]byte(hypothesis.RuleJSON), &rule); err != nil {
+		rule, err := JSONToRule(hypothesis.RuleJSON)
+		if err != nil {
 			return nil, nil, fmt.Errorf("策略 %s 规则无效: %w", hypothesis.Name, err)
 		}
 		if validationErrors := ValidateHypothesisRule(rule); len(validationErrors) > 0 {
@@ -72,15 +72,24 @@ func (s *PredictionService) RecalculateSession(sessionID uint) (*models.Predicti
 		hypothesis.TotalReturn = result.TotalReturn
 		hypothesis.MedianReturn = result.MedianReturn
 		hypothesis.ProfitLossRatio = result.ProfitLossRatio
+		hypothesis.ProfitLossRatioStatus = result.ProfitLossRatioStatus
 		hypothesis.OutSampleAvgReturn = result.OutSampleAvgReturn
 		hypothesis.OutSampleMaxDrawdown = result.OutSampleMaxDrawdown
 		hypothesis.OutSampleTradeCount = result.OutSampleTradeCount
 		hypothesis.BenchmarkAvailable = result.BenchmarkAvailable
+		hypothesis.BenchmarkReturn = result.BenchmarkReturn
+		hypothesis.ExcessReturn = result.ExcessReturn
 		hypothesis.DataCoverage = result.DataCoverage
 		hypothesis.NoLookaheadPassed = result.NoLookaheadPassed
 		hypothesis.BacktestConfigJSON = string(payload)
+		verdictJSON, _ := json.Marshal(result.Verdict)
+		hypothesis.VerdictJSON = string(verdictJSON)
 		hypothesis.StrategyVersion = CurrentStrategyVersion
 		hypothesis.FeatureVersion = config.FeatureVersion
+		hypothesis.RegistryVersion = CurrentIndicatorRegistry
+		hypothesis.EngineVersion = CurrentEngineVersion
+		hypothesis.LastVerdictStatus = result.Verdict.Status
+		hypothesis.ReviewDueAt = reviewDueAtForVerdict(result.Verdict, config)
 		if hypothesis.Status == "active" && !hypothesisMonitorReady(hypothesis) {
 			hypothesis.Status = "watch"
 		}

@@ -44,11 +44,17 @@ func (b *OrderBuilder) BuildEntryOrders(
 
 	targetAmount := totalEquity / float64(maxHoldings)
 	orders := make([]SimOrder, 0, len(signals))
+	selected := make(map[string]bool, len(held)+len(signals))
+	for code, isHeld := range held {
+		if isHeld {
+			selected[code] = true
+		}
+	}
 	for _, signal := range signals {
-		if held[signal.StockCode] {
+		if selected[signal.StockCode] {
 			continue
 		}
-		if len(held)+len(orders) >= maxHoldings {
+		if len(selected) >= maxHoldings {
 			break
 		}
 		price := featureMap[signal.StockCode]
@@ -83,6 +89,7 @@ func (b *OrderBuilder) BuildEntryOrders(
 			ReasonJSON: signal.ReasonJSON,
 			Source:     "strategy",
 		})
+		selected[signal.StockCode] = true
 		cash -= amount
 	}
 	return orders

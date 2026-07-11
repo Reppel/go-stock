@@ -1,7 +1,6 @@
 package backtest
 
 import (
-	"encoding/json"
 	"fmt"
 	"go-stock/backend/db"
 	"go-stock/backend/models"
@@ -14,10 +13,15 @@ const sqliteInClauseChunkSize = 900
 
 // Condition 策略条件
 type Condition struct {
-	Indicator string  `json:"indicator"`
-	Operator  string  `json:"operator"`
-	Ref       string  `json:"ref"`
-	Value     float64 `json:"value"`
+	Indicator   string  `json:"indicator"`
+	IndicatorID string  `json:"indicatorId,omitempty"`
+	Source      string  `json:"source,omitempty"`
+	Operator    string  `json:"operator"`
+	Ref         string  `json:"ref"`
+	RefID       string  `json:"refId,omitempty"`
+	Value       float64 `json:"value"`
+	Lag         int     `json:"lag,omitempty"`
+	RefLag      int     `json:"refLag,omitempty"`
 }
 
 // Rule 策略规则
@@ -40,12 +44,15 @@ type BacktestConfig struct {
 	LotSize           int     `json:"lotSize"`
 	MaxParticipation  float64 `json:"maxParticipation"`
 	ImpactCoefficient float64 `json:"impactCoefficient"`
+	LimitBuffer       float64 `json:"limitBuffer"`
 	UseT1Rule         bool    `json:"useT1Rule"`
 	UseLimitRule      bool    `json:"useLimitRule"`
 	UseSuspensionRule bool    `json:"useSuspensionRule"`
 	MinDataCoverage   float64 `json:"minDataCoverage"`
 	FeatureVersion    string  `json:"featureVersion"`
 	BenchmarkCode     string  `json:"benchmarkCode"`
+	PaperTradeDays    int     `json:"paperTradeDays"`
+	ActiveTTLDays     int     `json:"activeTtlDays"`
 }
 
 func DefaultBacktestConfig() BacktestConfig {
@@ -59,17 +66,23 @@ func DefaultBacktestConfig() BacktestConfig {
 		LotSize:           100,
 		MaxParticipation:  0.05,
 		ImpactCoefficient: 0.002,
+		LimitBuffer:       0,
 		UseT1Rule:         true,
 		UseLimitRule:      true,
 		UseSuspensionRule: true,
 		MinDataCoverage:   0.95,
 		FeatureVersion:    CurrentFeatureVersion,
 		BenchmarkCode:     "sh000300",
+		PaperTradeDays:    60,
+		ActiveTTLDays:     90,
 	}
 }
 
 func normalizeBacktestConfig(config BacktestConfig) BacktestConfig {
 	defaults := DefaultBacktestConfig()
+	if isZeroBacktestConfig(config) {
+		return defaults
+	}
 	if config.EntryMode == "" {
 		config.EntryMode = defaults.EntryMode
 	}
@@ -97,14 +110,43 @@ func normalizeBacktestConfig(config BacktestConfig) BacktestConfig {
 	if config.ImpactCoefficient <= 0 {
 		config.ImpactCoefficient = defaults.ImpactCoefficient
 	}
+	if config.LimitBuffer < 0 || config.LimitBuffer > 0.01 {
+		config.LimitBuffer = defaults.LimitBuffer
+	}
 	if config.FeatureVersion == "" {
 		config.FeatureVersion = defaults.FeatureVersion
 	}
 	if config.BenchmarkCode == "" {
 		config.BenchmarkCode = defaults.BenchmarkCode
 	}
-	config.UseT1Rule = true
+	if config.PaperTradeDays <= 0 {
+		config.PaperTradeDays = defaults.PaperTradeDays
+	}
+	if config.ActiveTTLDays <= 0 {
+		config.ActiveTTLDays = defaults.ActiveTTLDays
+	}
 	return config
+}
+
+func isZeroBacktestConfig(config BacktestConfig) bool {
+	return config.EntryMode == "" &&
+		config.Slippage == 0 &&
+		config.FeeRate == 0 &&
+		config.SellStampDuty == 0 &&
+		config.MinCommission == 0 &&
+		config.InitialCapital == 0 &&
+		config.LotSize == 0 &&
+		config.MaxParticipation == 0 &&
+		config.ImpactCoefficient == 0 &&
+		config.LimitBuffer == 0 &&
+		!config.UseT1Rule &&
+		!config.UseLimitRule &&
+		!config.UseSuspensionRule &&
+		config.MinDataCoverage == 0 &&
+		config.FeatureVersion == "" &&
+		config.BenchmarkCode == "" &&
+		config.PaperTradeDays == 0 &&
+		config.ActiveTTLDays == 0
 }
 
 // Signal 买入信号
@@ -152,34 +194,39 @@ type DailyNav struct {
 
 // ValidationResult 验证结果
 type ValidationResult struct {
-	WinRate              float64           `json:"winRate"`
-	AvgReturn            float64           `json:"avgReturn"`
-	MedianReturn         float64           `json:"medianReturn"`
-	ProfitLossRatio      float64           `json:"profitLossRatio"`
-	MaxDrawdown          float64           `json:"maxDrawdown"`
-	TradeCount           int               `json:"tradeCount"`
-	TotalReturn          float64           `json:"totalReturn"`
-	AnnualizedReturn     float64           `json:"annualizedReturn"`
-	AnnualizedVolatility float64           `json:"annualizedVolatility"`
-	SharpeRatio          float64           `json:"sharpeRatio"`
-	SortinoRatio         float64           `json:"sortinoRatio"`
-	CalmarRatio          float64           `json:"calmarRatio"`
-	MaxSingleTradeLoss   float64           `json:"maxSingleTradeLoss"`
-	OutSampleAvgReturn   float64           `json:"outSampleAvgReturn"`
-	OutSampleMaxDrawdown float64           `json:"outSampleMaxDrawdown"`
-	OutSampleTradeCount  int               `json:"outSampleTradeCount"`
-	BenchmarkCode        string            `json:"benchmarkCode"`
-	BenchmarkReturn      float64           `json:"benchmarkReturn"`
-	BenchmarkAvailable   bool              `json:"benchmarkAvailable"`
-	ExcessReturn         float64           `json:"excessReturn"`
-	TurnoverRate         float64           `json:"turnoverRate"`
-	AverageHoldingDays   float64           `json:"averageHoldingDays"`
-	DataCoverage         float64           `json:"dataCoverage"`
-	NoLookaheadPassed    bool              `json:"noLookaheadPassed"`
-	BacktestConfig       BacktestConfig    `json:"backtestConfig"`
-	DailyNAV             []DailyNav        `json:"dailyNAV"`
-	Trades               []Trade           `json:"trades"`
-	WalkForwardFolds     []WalkForwardFold `json:"walkForwardFolds"`
+	WinRate               float64            `json:"winRate"`
+	AvgReturn             float64            `json:"avgReturn"`
+	MedianReturn          float64            `json:"medianReturn"`
+	ProfitLossRatio       float64            `json:"profitLossRatio"`
+	ProfitLossRatioStatus string             `json:"profitLossRatioStatus"`
+	MaxDrawdown           float64            `json:"maxDrawdown"`
+	TradeCount            int                `json:"tradeCount"`
+	TotalReturn           float64            `json:"totalReturn"`
+	AnnualizedReturn      float64            `json:"annualizedReturn"`
+	AnnualizedVolatility  float64            `json:"annualizedVolatility"`
+	SharpeRatio           float64            `json:"sharpeRatio"`
+	SortinoRatio          float64            `json:"sortinoRatio"`
+	CalmarRatio           float64            `json:"calmarRatio"`
+	MaxSingleTradeLoss    float64            `json:"maxSingleTradeLoss"`
+	OutSampleAvgReturn    float64            `json:"outSampleAvgReturn"`
+	OutSampleMaxDrawdown  float64            `json:"outSampleMaxDrawdown"`
+	OutSampleTradeCount   int                `json:"outSampleTradeCount"`
+	BenchmarkCode         string             `json:"benchmarkCode"`
+	BenchmarkReturn       float64            `json:"benchmarkReturn"`
+	BenchmarkAvailable    bool               `json:"benchmarkAvailable"`
+	ExcessReturn          float64            `json:"excessReturn"`
+	TurnoverRate          float64            `json:"turnoverRate"`
+	Turnover              TurnoverBreakdown  `json:"turnover"`
+	AverageHoldingDays    float64            `json:"averageHoldingDays"`
+	DataCoverage          float64            `json:"dataCoverage"`
+	NoLookaheadPassed     bool               `json:"noLookaheadPassed"`
+	BacktestConfig        BacktestConfig     `json:"backtestConfig"`
+	CostSensitivity       []CostStressResult `json:"costSensitivity"`
+	OverfitDiagnostics    OverfitDiagnostics `json:"overfitDiagnostics"`
+	Verdict               QuantVerdict       `json:"verdict"`
+	DailyNAV              []DailyNav         `json:"dailyNAV"`
+	Trades                []Trade            `json:"trades"`
+	WalkForwardFolds      []WalkForwardFold  `json:"walkForwardFolds"`
 }
 
 type WalkForwardFold struct {
@@ -316,12 +363,13 @@ func (v *WalkForwardValidator) ValidateWithConfig(
 	}
 	result.DataCoverage = v.estimateDataCoverage(universe, tradingDays, config.FeatureVersion)
 	result.WalkForwardFolds, result.OutSampleAvgReturn, result.OutSampleMaxDrawdown, result.OutSampleTradeCount =
-		v.calculateWalkForwardMetrics(result.Trades, result.DailyNAV, tradingDays, timeHorizon)
+		v.calculateWalkForwardBacktests(rule, universe, tradingDays, timeHorizon, config)
 	result.BenchmarkCode = config.BenchmarkCode
 	result.BenchmarkReturn, result.BenchmarkAvailable = v.calculateBenchmarkReturn(config.BenchmarkCode, startDate, endDate, config.FeatureVersion)
 	if result.BenchmarkAvailable {
 		result.ExcessReturn = result.TotalReturn - result.BenchmarkReturn
 	}
+	v.attachVerdict(rule, universe, tradingDays, timeHorizon, config, result)
 	if config.MinDataCoverage > 0 && result.DataCoverage < config.MinDataCoverage {
 		return result, fmt.Errorf("特征覆盖率 %.1f%% 低于最低要求 %.1f%%", result.DataCoverage*100, config.MinDataCoverage*100)
 	}
@@ -405,21 +453,22 @@ func (v *WalkForwardValidator) calculateMetrics(trades []Trade, dailyNAV []Daily
 	calmar := safeRatio(annualizedReturn, portfolioMaxDrawdown)
 	if len(trades) == 0 {
 		return &ValidationResult{
-			WinRate:              0,
-			AvgReturn:            0,
-			MedianReturn:         0,
-			ProfitLossRatio:      0,
-			MaxDrawdown:          portfolioMaxDrawdown,
-			TradeCount:           0,
-			TotalReturn:          totalReturn,
-			AnnualizedReturn:     annualizedReturn,
-			AnnualizedVolatility: annualizedVolatility,
-			SharpeRatio:          sharpe,
-			SortinoRatio:         sortino,
-			CalmarRatio:          calmar,
-			NoLookaheadPassed:    true,
-			DailyNAV:             dailyNAV,
-			Trades:               trades,
+			WinRate:               0,
+			AvgReturn:             0,
+			MedianReturn:          0,
+			ProfitLossRatio:       0,
+			ProfitLossRatioStatus: "no_trades",
+			MaxDrawdown:           portfolioMaxDrawdown,
+			TradeCount:            0,
+			TotalReturn:           totalReturn,
+			AnnualizedReturn:      annualizedReturn,
+			AnnualizedVolatility:  annualizedVolatility,
+			SharpeRatio:           sharpe,
+			SortinoRatio:          sortino,
+			CalmarRatio:           calmar,
+			NoLookaheadPassed:     true,
+			DailyNAV:              dailyNAV,
+			Trades:                trades,
 		}
 	}
 
@@ -464,30 +513,34 @@ func (v *WalkForwardValidator) calculateMetrics(trades []Trade, dailyNAV []Daily
 	}
 	avgHoldDays := float64(totalHoldDays) / float64(len(trades))
 	profitLossRatio := 0.0
+	profitLossRatioStatus := "normal"
 	if grossLoss > 0 && losingTrades > 0 && winningTrades > 0 {
 		profitLossRatio = (grossProfit / float64(winningTrades)) / (grossLoss / float64(losingTrades))
-	} else if grossProfit > 0 {
-		profitLossRatio = grossProfit / float64(maxInt(winningTrades, 1))
+	} else if grossProfit > 0 && losingTrades == 0 {
+		profitLossRatioStatus = "no_loss"
+	} else if winningTrades == 0 && losingTrades > 0 {
+		profitLossRatioStatus = "no_profit"
 	}
 
 	return &ValidationResult{
-		WinRate:              winRate,
-		AvgReturn:            avgReturn,
-		MedianReturn:         medianReturn,
-		ProfitLossRatio:      profitLossRatio,
-		MaxDrawdown:          portfolioMaxDrawdown,
-		TradeCount:           len(trades),
-		TotalReturn:          totalReturn,
-		AnnualizedReturn:     annualizedReturn,
-		AnnualizedVolatility: annualizedVolatility,
-		SharpeRatio:          sharpe,
-		SortinoRatio:         sortino,
-		CalmarRatio:          calmar,
-		MaxSingleTradeLoss:   maxSingleTradeLoss,
-		AverageHoldingDays:   avgHoldDays,
-		NoLookaheadPassed:    true,
-		DailyNAV:             dailyNAV,
-		Trades:               trades,
+		WinRate:               winRate,
+		AvgReturn:             avgReturn,
+		MedianReturn:          medianReturn,
+		ProfitLossRatio:       profitLossRatio,
+		ProfitLossRatioStatus: profitLossRatioStatus,
+		MaxDrawdown:           portfolioMaxDrawdown,
+		TradeCount:            len(trades),
+		TotalReturn:           totalReturn,
+		AnnualizedReturn:      annualizedReturn,
+		AnnualizedVolatility:  annualizedVolatility,
+		SharpeRatio:           sharpe,
+		SortinoRatio:          sortino,
+		CalmarRatio:           calmar,
+		MaxSingleTradeLoss:    maxSingleTradeLoss,
+		AverageHoldingDays:    avgHoldDays,
+		NoLookaheadPassed:     true,
+		DailyNAV:              dailyNAV,
+		Trades:                trades,
 	}
 }
 
@@ -570,6 +623,58 @@ func (v *WalkForwardValidator) calculateWalkForwardMetrics(trades []Trade, nav [
 		})
 	}
 	return folds, mean(outReturns), maxDrawdown, len(outReturns)
+}
+
+// calculateWalkForwardBacktests re-runs each temporal validation fold with
+// isolated cash and positions. It avoids labelling slices of one full-period
+// portfolio run as independent out-of-sample evidence.
+func (v *WalkForwardValidator) calculateWalkForwardBacktests(rule Rule, universe []string, tradingDays []string, purgeDays int, config BacktestConfig) ([]WalkForwardFold, float64, float64, int) {
+	if len(tradingDays) < 10 {
+		return nil, 0, 0, 0
+	}
+	if purgeDays < 1 {
+		purgeDays = 1
+	}
+	firstTest := int(float64(len(tradingDays)) * 0.4)
+	remaining := len(tradingDays) - firstTest
+	foldSize := remaining / 3
+	if foldSize < 2 {
+		firstTest = int(float64(len(tradingDays)) * 0.7)
+		foldSize = len(tradingDays) - firstTest
+	}
+	folds := make([]WalkForwardFold, 0, 3)
+	returns := make([]float64, 0)
+	maxDrawdown := 0.0
+	for foldIndex, startIndex := 0, firstTest; startIndex < len(tradingDays) && foldIndex < 3; foldIndex, startIndex = foldIndex+1, startIndex+foldSize {
+		testStart := startIndex + purgeDays
+		if testStart >= len(tradingDays) {
+			break
+		}
+		testEnd := startIndex + foldSize - 1
+		if foldIndex == 2 || testEnd >= len(tradingDays) {
+			testEnd = len(tradingDays) - 1
+		}
+		if testStart > testEnd {
+			continue
+		}
+		foldDays := append([]string(nil), tradingDays[testStart:testEnd+1]...)
+		run, err := NewPortfolioEngine(NewFeatureRepositoryForVersion(config.FeatureVersion)).
+			RunBacktest(rule, universe, foldDays, purgeDays, config)
+		if err != nil || run == nil {
+			continue
+		}
+		for _, trade := range run.Trades {
+			returns = append(returns, trade.ReturnRate)
+		}
+		if run.MaxDrawdown > maxDrawdown {
+			maxDrawdown = run.MaxDrawdown
+		}
+		folds = append(folds, WalkForwardFold{
+			StartDate: foldDays[0], EndDate: foldDays[len(foldDays)-1], TradeCount: run.TradeCount,
+			AvgReturn: run.AvgReturn, MaxDrawdown: run.MaxDrawdown,
+		})
+	}
+	return folds, mean(returns), maxDrawdown, len(returns)
 }
 
 func (v *WalkForwardValidator) calculateBenchmarkReturn(benchmarkCode string, startDate string, endDate string, featureVersion string) (float64, bool) {
@@ -725,17 +830,4 @@ func (v *WalkForwardValidator) getTradingDays(startDate, endDate, featureVersion
 func (v *WalkForwardValidator) addCalendarDays(date string, days int) string {
 	t, _ := time.Parse("2006-01-02", date)
 	return t.AddDate(0, 0, days).Format("2006-01-02")
-}
-
-// RuleToJSON 规则转 JSON
-func RuleToJSON(rule Rule) string {
-	b, _ := json.Marshal(rule)
-	return string(b)
-}
-
-// JSONToRule JSON 转规则
-func JSONToRule(s string) (Rule, error) {
-	var rule Rule
-	err := json.Unmarshal([]byte(s), &rule)
-	return rule, err
 }

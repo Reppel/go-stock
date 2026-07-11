@@ -67,7 +67,7 @@ func (s *FeatureSyncService) SyncStockFeatures(stockCode string, days int) error
 		}
 	}
 
-	klineData := completedFeatureKLines(normalizeFeatureKLines(*klines), time.Now())
+	klineData := completedFeatureKLines(normalizeFeatureKLines(*klines), shanghaiNow())
 	if len(klineData) <= featureWarmupBars {
 		return fmt.Errorf("%s 日K数据不足：实际%d根，至少需要%d根（含%d根指标预热）",
 			stockCode, len(klineData), featureWarmupBars+1, featureWarmupBars)
@@ -159,8 +159,7 @@ func completedFeatureKLines(klines []data.KLineData, now time.Time) []data.KLine
 }
 
 func featureDataAsOf(day string) time.Time {
-	location := time.FixedZone("Asia/Shanghai", 8*60*60)
-	parsed, err := time.ParseInLocation("2006-01-02 15:04", strings.TrimSpace(day)+" 15:10", location)
+	parsed, err := time.ParseInLocation("2006-01-02 15:04", strings.TrimSpace(day)+" 15:10", shanghaiLocation())
 	if err != nil {
 		return time.Time{}
 	}

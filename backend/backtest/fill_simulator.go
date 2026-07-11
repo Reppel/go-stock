@@ -27,14 +27,22 @@ func (s *FillSimulator) CanTrade(order SimOrder, feature models.StockFeature, pr
 	limitRate := priceLimitRate(order.StockCode, order.StockName)
 	upperLimit := previous.Close * (1 + limitRate)
 	lowerLimit := previous.Close * (1 - limitRate)
+	limitBuffer := s.config.LimitBuffer
+	if limitBuffer < 0 {
+		limitBuffer = 0
+	}
+	if limitBuffer > 0.01 {
+		limitBuffer = 0.01
+	}
 	executionPrice := order.PriceHint
 	if executionPrice <= 0 {
 		executionPrice = feature.Open
 	}
-	if order.Side == OrderSideBuy && executionPrice >= upperLimit*0.998 {
+	epsilon := 1e-8
+	if order.Side == OrderSideBuy && executionPrice >= upperLimit*(1-limitBuffer)-epsilon {
 		return false
 	}
-	if order.Side == OrderSideSell && executionPrice <= lowerLimit*1.002 {
+	if order.Side == OrderSideSell && executionPrice <= lowerLimit*(1+limitBuffer)+epsilon {
 		return false
 	}
 	return true

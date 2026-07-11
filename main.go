@@ -311,6 +311,7 @@ func AutoMigrate() {
 	db.Dao.AutoMigrate(&models.PredictionTrade{})
 	db.Dao.AutoMigrate(&models.TradeDecisionLog{})
 	db.Dao.AutoMigrate(&models.PredictionGenerationAudit{})
+	db.Dao.AutoMigrate(&models.PredictionResearchIdea{})
 	db.Dao.AutoMigrate(&models.MarketFactorDaily{})
 	db.Dao.AutoMigrate(&models.StockMoneyFlowDaily{})
 	db.Dao.AutoMigrate(&models.SectorFlowDaily{})

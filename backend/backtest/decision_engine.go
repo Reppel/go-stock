@@ -33,6 +33,7 @@ func (e *DecisionEngine) Build(ctx DecisionContext) models.PredictionDecision {
 		return models.PredictionDecision{}
 	}
 	f := ctx.Feature
+	hypotheses := deduplicateModelHypotheses(ctx.Hypotheses)
 	quote := ctx.Quote
 	holding := ctx.Holding
 	currentPrice := f.Close
@@ -65,12 +66,12 @@ func (e *DecisionEngine) Build(ctx DecisionContext) models.PredictionDecision {
 	noLookaheadOK := true
 	bestTargetReturn := 0.01
 	bestRuleStopLoss := 0.0
-	matchedFacts := make([]matchedStrategyFact, 0, len(ctx.Hypotheses))
-	sampleSummaries := make([]StrategySampleSummary, 0, len(ctx.Hypotheses))
+	matchedFacts := make([]matchedStrategyFact, 0, len(hypotheses))
+	sampleSummaries := make([]StrategySampleSummary, 0, len(hypotheses))
 	reasons := make([]string, 0, 10)
 	risks := make([]string, 0, 10)
-	stockTradeStats := loadStockTradeStats(ctx.Hypotheses, f.StockCode)
-	poolSampleCount, stockSampleCount := loadUniqueTradeSamples(ctx.Hypotheses, f.StockCode)
+	stockTradeStats := loadStockTradeStats(hypotheses, f.StockCode)
+	poolSampleCount, stockSampleCount := loadUniqueTradeSamples(hypotheses, f.StockCode)
 	relevantStrategyCount := 0
 	relevantSampleReady := false
 	probabilityWeighted := 0.0
@@ -79,9 +80,9 @@ func (e *DecisionEngine) Build(ctx DecisionContext) models.PredictionDecision {
 	matchedWeight := 0.0
 	dataReady := f.Adjusted && f.FeatureVersion == CurrentFeatureVersion && featureFreshForDecision(f, time.Now())
 
-	for _, h := range ctx.Hypotheses {
-		var rule Rule
-		if err := json.Unmarshal([]byte(h.RuleJSON), &rule); err != nil {
+	for _, h := range hypotheses {
+		rule, err := JSONToRule(h.RuleJSON)
+		if err != nil {
 			continue
 		}
 		entryMatched := e.strategy.MatchConditionsWithPrevious(rule.EntryConditions, f, ctx.PreviousFeature)
@@ -289,6 +290,7 @@ func (e *DecisionEngine) Build(ctx DecisionContext) models.PredictionDecision {
 		RiskLevel:             risk.RiskLevel,
 		Score:                 score,
 		Probability:           probability,
+		ProbabilityMethod:     "beta_binomial_shrinkage",
 		ExpectedReturn:        expectedReturn,
 		CurrentPrice:          currentPrice,
 		ReferencePrice:        f.Close,
@@ -320,6 +322,46 @@ func (e *DecisionEngine) Build(ctx DecisionContext) models.PredictionDecision {
 	alertJSON, _ := json.Marshal(alerts)
 	decision.AlertJSON = string(alertJSON)
 	return decision
+}
+
+func deduplicateModelHypotheses(hypotheses []models.PredictionHypothesis) []models.PredictionHypothesis {
+	result := make([]models.PredictionHypothesis, 0, len(hypotheses))
+	indexByRule := make(map[string]int, len(hypotheses))
+	for _, hypothesis := range hypotheses {
+		rule, err := JSONToRule(hypothesis.RuleJSON)
+		if err != nil {
+			continue
+		}
+		key := ruleExecutionFingerprint(rule)
+		if key == "" {
+			continue
+		}
+		if index, exists := indexByRule[key]; exists {
+			if preferHypothesis(hypothesis, result[index]) {
+				result[index] = hypothesis
+			}
+			continue
+		}
+		indexByRule[key] = len(result)
+		result = append(result, hypothesis)
+	}
+	return result
+}
+
+func preferHypothesis(candidate, current models.PredictionHypothesis) bool {
+	if candidate.NoLookaheadPassed != current.NoLookaheadPassed {
+		return candidate.NoLookaheadPassed
+	}
+	if candidate.OutSampleTradeCount != current.OutSampleTradeCount {
+		return candidate.OutSampleTradeCount > current.OutSampleTradeCount
+	}
+	if candidate.OutSampleAvgReturn != current.OutSampleAvgReturn {
+		return candidate.OutSampleAvgReturn > current.OutSampleAvgReturn
+	}
+	if candidate.TradeCount != current.TradeCount {
+		return candidate.TradeCount > current.TradeCount
+	}
+	return candidate.ID < current.ID
 }
 
 func quoteCompatibleWithFeature(quote quoteSnapshot, feature models.StockFeature) bool {

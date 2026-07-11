@@ -7,10 +7,12 @@ import (
 	"strings"
 )
 
-type StrategyEngine struct{}
+type StrategyEngine struct {
+	viewService *UnifiedFeatureViewService
+}
 
 func NewStrategyEngine() *StrategyEngine {
-	return &StrategyEngine{}
+	return &StrategyEngine{viewService: NewUnifiedFeatureViewService()}
 }
 
 func (e *StrategyEngine) GenerateSignals(rule Rule, features []models.StockFeature) []Signal {
@@ -19,13 +21,20 @@ func (e *StrategyEngine) GenerateSignals(rule Rule, features []models.StockFeatu
 
 func (e *StrategyEngine) GenerateSignalsWithPrevious(rule Rule, features []models.StockFeature, previous map[string]models.StockFeature) []Signal {
 	signals := make([]Signal, 0)
+	indicatorIDs := ruleIndicatorIDs(rule)
 	for _, f := range features {
 		previousFeature, hasPrevious := previous[f.StockCode]
 		var prior *models.StockFeature
 		if hasPrevious {
 			prior = &previousFeature
 		}
-		if e.MatchConditionsWithPrevious(rule.EntryConditions, f, prior) {
+		currentView := e.viewService.BuildForIndicators(f.StockCode, f.Date, f, indicatorIDs)
+		var previousView *UnifiedFeatureView
+		if prior != nil {
+			built := e.viewService.BuildForIndicators(prior.StockCode, prior.Date, *prior, indicatorIDs)
+			previousView = &built
+		}
+		if e.MatchConditionsWithViews(rule.EntryConditions, currentView, previousView) {
 			score := e.scoreFeature(rule, f, prior)
 			signals = append(signals, Signal{
 				StockCode:  f.StockCode,
@@ -66,8 +75,22 @@ func (e *StrategyEngine) MatchConditionsWithPrevious(conditions []Condition, f m
 	if len(conditions) == 0 {
 		return false
 	}
+	indicatorIDs := conditionIndicatorIDs(conditions)
+	currentView := e.viewService.BuildForIndicators(f.StockCode, f.Date, f, indicatorIDs)
+	var previousView *UnifiedFeatureView
+	if previous != nil {
+		built := e.viewService.BuildForIndicators(previous.StockCode, previous.Date, *previous, indicatorIDs)
+		previousView = &built
+	}
+	return e.MatchConditionsWithViews(conditions, currentView, previousView)
+}
+
+func (e *StrategyEngine) MatchConditionsWithViews(conditions []Condition, current UnifiedFeatureView, previous *UnifiedFeatureView) bool {
+	if len(conditions) == 0 {
+		return false
+	}
 	for _, c := range conditions {
-		if !e.MatchConditionWithPrevious(c, f, previous) {
+		if !e.MatchConditionWithViews(c, current, previous) {
 			return false
 		}
 	}
@@ -79,10 +102,30 @@ func (e *StrategyEngine) MatchCondition(c Condition, f models.StockFeature) bool
 }
 
 func (e *StrategyEngine) MatchConditionWithPrevious(c Condition, f models.StockFeature, previous *models.StockFeature) bool {
-	value := e.GetIndicatorValue(c.Indicator, f)
+	indicatorIDs := conditionIndicatorIDs([]Condition{c})
+	currentView := e.viewService.BuildForIndicators(f.StockCode, f.Date, f, indicatorIDs)
+	var previousView *UnifiedFeatureView
+	if previous != nil {
+		built := e.viewService.BuildForIndicators(previous.StockCode, previous.Date, *previous, indicatorIDs)
+		previousView = &built
+	}
+	return e.MatchConditionWithViews(c, currentView, previousView)
+}
+
+func (e *StrategyEngine) MatchConditionWithViews(c Condition, current UnifiedFeatureView, previous *UnifiedFeatureView) bool {
+	indicatorID := canonicalIndicatorID(firstNonBlank(c.IndicatorID, c.Indicator))
+	refIndicatorID := canonicalIndicatorID(firstNonBlank(c.RefID, c.Ref))
+	value, ok := indicatorValueFromViews(indicatorID, current, previous, c.Lag)
+	if !ok {
+		return false
+	}
 	ref := c.Value
-	if strings.TrimSpace(c.Ref) != "" {
-		ref = e.GetIndicatorValue(c.Ref, f)
+	if strings.TrimSpace(firstNonBlank(c.RefID, c.Ref)) != "" {
+		refValue, refOK := indicatorValueFromViews(refIndicatorID, current, previous, c.RefLag)
+		if !refOK {
+			return false
+		}
+		ref = refValue
 	}
 
 	switch strings.TrimSpace(c.Operator) {
@@ -99,23 +142,37 @@ func (e *StrategyEngine) MatchConditionWithPrevious(c Condition, f models.StockF
 	case "!=":
 		return value != ref
 	case "cross_up", "crosses_above":
-		if previous == nil {
+		if c.Lag != 0 || previous == nil {
 			return false
 		}
-		previousValue := e.GetIndicatorValue(c.Indicator, *previous)
+		previousValue, previousOK := indicatorValueFromViews(indicatorID, current, previous, 1)
+		if !previousOK {
+			return false
+		}
 		previousRef := c.Value
-		if strings.TrimSpace(c.Ref) != "" {
-			previousRef = e.GetIndicatorValue(c.Ref, *previous)
+		if strings.TrimSpace(firstNonBlank(c.RefID, c.Ref)) != "" {
+			var refOK bool
+			previousRef, refOK = indicatorValueFromViews(refIndicatorID, current, previous, 1)
+			if !refOK {
+				return false
+			}
 		}
 		return previousValue <= previousRef && value > ref
 	case "cross_down", "crosses_below":
-		if previous == nil {
+		if c.Lag != 0 || previous == nil {
 			return false
 		}
-		previousValue := e.GetIndicatorValue(c.Indicator, *previous)
+		previousValue, previousOK := indicatorValueFromViews(indicatorID, current, previous, 1)
+		if !previousOK {
+			return false
+		}
 		previousRef := c.Value
-		if strings.TrimSpace(c.Ref) != "" {
-			previousRef = e.GetIndicatorValue(c.Ref, *previous)
+		if strings.TrimSpace(firstNonBlank(c.RefID, c.Ref)) != "" {
+			var refOK bool
+			previousRef, refOK = indicatorValueFromViews(refIndicatorID, current, previous, 1)
+			if !refOK {
+				return false
+			}
 		}
 		return previousValue >= previousRef && value < ref
 	default:
@@ -123,13 +180,69 @@ func (e *StrategyEngine) MatchConditionWithPrevious(c Condition, f models.StockF
 	}
 }
 
+func (e *StrategyEngine) GetIndicatorValueWithLag(indicator string, f models.StockFeature, previous *models.StockFeature, lag int) (float64, bool) {
+	indicatorID := canonicalIndicatorID(indicator)
+	currentView := e.viewService.BuildForIndicators(f.StockCode, f.Date, f, []string{indicatorID})
+	var previousView *UnifiedFeatureView
+	if previous != nil {
+		built := e.viewService.BuildForIndicators(previous.StockCode, previous.Date, *previous, []string{indicatorID})
+		previousView = &built
+	}
+	return indicatorValueFromViews(indicatorID, currentView, previousView, lag)
+}
+
 func (e *StrategyEngine) MatchAnyConditionWithPrevious(conditions []Condition, f models.StockFeature, previous *models.StockFeature) bool {
+	if len(conditions) == 0 {
+		return false
+	}
+	indicatorIDs := conditionIndicatorIDs(conditions)
+	currentView := e.viewService.BuildForIndicators(f.StockCode, f.Date, f, indicatorIDs)
+	var previousView *UnifiedFeatureView
+	if previous != nil {
+		built := e.viewService.BuildForIndicators(previous.StockCode, previous.Date, *previous, indicatorIDs)
+		previousView = &built
+	}
 	for _, condition := range conditions {
-		if e.MatchConditionWithPrevious(condition, f, previous) {
+		if e.MatchConditionWithViews(condition, currentView, previousView) {
 			return true
 		}
 	}
 	return false
+}
+
+func indicatorValueFromViews(indicatorID string, current UnifiedFeatureView, previous *UnifiedFeatureView, lag int) (float64, bool) {
+	switch lag {
+	case 0:
+		return current.Value(indicatorID)
+	case 1:
+		if previous == nil {
+			return 0, false
+		}
+		return previous.Value(indicatorID)
+	default:
+		return 0, false
+	}
+}
+
+func conditionIndicatorIDs(conditions []Condition) []string {
+	seen := make(map[string]struct{})
+	for _, condition := range conditions {
+		for _, raw := range []string{firstNonBlank(condition.IndicatorID, condition.Indicator), firstNonBlank(condition.RefID, condition.Ref)} {
+			if strings.TrimSpace(raw) == "" {
+				continue
+			}
+			seen[canonicalIndicatorID(raw)] = struct{}{}
+		}
+	}
+	result := make([]string, 0, len(seen))
+	for indicatorID := range seen {
+		result = append(result, indicatorID)
+	}
+	return result
+}
+
+func ruleIndicatorIDs(rule Rule) []string {
+	return conditionIndicatorIDs(append(append([]Condition{}, rule.EntryConditions...), rule.ExitConditions...))
 }
 
 func (e *StrategyEngine) GetIndicatorValue(indicator string, f models.StockFeature) float64 {

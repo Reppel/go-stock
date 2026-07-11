@@ -3713,13 +3713,31 @@ func (a *App) SavePredictionObservation(hypothesisID uint) string {
 	return "保存观察成功"
 }
 
-// SavePredictionHypothesis 启用假设为正式监控
+// SavePredictionHypothesis 将通过回测门槛的假设送入持久化前向验证账户。
 func (a *App) SavePredictionHypothesis(hypothesisID uint) string {
 	svc := backtest.NewPredictionService()
 	if err := svc.SaveHypothesis(hypothesisID); err != nil {
+		return "开始前向验证失败: " + err.Error()
+	}
+	return "已开始前向验证；达标后请在策略监控中确认启用正式监控"
+}
+
+// ActivatePredictionHypothesis 由用户确认将达标的前向策略启用为正式监控。
+func (a *App) ActivatePredictionHypothesis(hypothesisID uint) string {
+	svc := backtest.NewPredictionService()
+	if err := svc.ActivateHypothesis(hypothesisID); err != nil {
 		return "启用正式监控失败: " + err.Error()
 	}
-	return "启用正式监控成功"
+	return "已启用正式监控"
+}
+
+// GetPredictionPaperTradingDetails 获取模拟账户、持仓、交易和每日净值。
+func (a *App) GetPredictionPaperTradingDetails(hypothesisID uint) map[string]any {
+	details, err := backtest.NewPredictionService().GetPaperTradingDetails(hypothesisID)
+	if err != nil {
+		return map[string]any{"code": 0, "msg": err.Error()}
+	}
+	return map[string]any{"code": 1, "data": details}
 }
 
 // DisablePredictionHypothesis 禁用假设

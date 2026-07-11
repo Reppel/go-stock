@@ -1,11 +1,25 @@
 export namespace backtest {
 	
 	export class IndicatorDefinition {
+	    indicatorId: string;
 	    name: string;
 	    label: string;
 	    source: string;
+	    table: string;
+	    field: string;
+	    type: string;
 	    unit: string;
+	    dataType: string;
 	    description: string;
+	    allowedOperators: string[];
+	    availableAt: string;
+	    coverage: number;
+	    startDate: string;
+	    lookbackDays: number;
+	    missingPolicy: string;
+	    status: string;
+	    featureVersion: string;
+	    registryVersion: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new IndicatorDefinition(source);
@@ -13,11 +27,25 @@ export namespace backtest {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.indicatorId = source["indicatorId"];
 	        this.name = source["name"];
 	        this.label = source["label"];
 	        this.source = source["source"];
+	        this.table = source["table"];
+	        this.field = source["field"];
+	        this.type = source["type"];
 	        this.unit = source["unit"];
+	        this.dataType = source["dataType"];
 	        this.description = source["description"];
+	        this.allowedOperators = source["allowedOperators"];
+	        this.availableAt = source["availableAt"];
+	        this.coverage = source["coverage"];
+	        this.startDate = source["startDate"];
+	        this.lookbackDays = source["lookbackDays"];
+	        this.missingPolicy = source["missingPolicy"];
+	        this.status = source["status"];
+	        this.featureVersion = source["featureVersion"];
+	        this.registryVersion = source["registryVersion"];
 	    }
 	}
 	export class PredictionAlert {
@@ -2951,6 +2979,7 @@ export namespace models {
 	    riskLevel: string;
 	    score: number;
 	    probability: number;
+	    probabilityMethod: string;
 	    expectedReturn: number;
 	    currentPrice: number;
 	    referencePrice: number;
@@ -3005,6 +3034,7 @@ export namespace models {
 	        this.riskLevel = source["riskLevel"];
 	        this.score = source["score"];
 	        this.probability = source["probability"];
+	        this.probabilityMethod = source["probabilityMethod"];
 	        this.expectedReturn = source["expectedReturn"];
 	        this.currentPrice = source["currentPrice"];
 	        this.referencePrice = source["referencePrice"];
@@ -3057,9 +3087,17 @@ export namespace models {
 	    id: number;
 	    sessionId: number;
 	    source: string;
+	    prompt: string;
 	    rawOutput: string;
+	    normalizedDsl: string;
+	    toolCallsJson: string;
+	    aiConfigId: number;
+	    modelName: string;
+	    temperature: number;
 	    errorJson: string;
 	    schemaVersion: string;
+	    registryVersion: string;
+	    engineVersion: string;
 	    // Go type: time
 	    createdAt: any;
 	
@@ -3072,9 +3110,17 @@ export namespace models {
 	        this.id = source["id"];
 	        this.sessionId = source["sessionId"];
 	        this.source = source["source"];
+	        this.prompt = source["prompt"];
 	        this.rawOutput = source["rawOutput"];
+	        this.normalizedDsl = source["normalizedDsl"];
+	        this.toolCallsJson = source["toolCallsJson"];
+	        this.aiConfigId = source["aiConfigId"];
+	        this.modelName = source["modelName"];
+	        this.temperature = source["temperature"];
 	        this.errorJson = source["errorJson"];
 	        this.schemaVersion = source["schemaVersion"];
+	        this.registryVersion = source["registryVersion"];
+	        this.engineVersion = source["engineVersion"];
 	        this.createdAt = this.convertValues(source["createdAt"], null);
 	    }
 	
@@ -3113,17 +3159,38 @@ export namespace models {
 	    totalReturn: number;
 	    medianReturn: number;
 	    profitLossRatio: number;
+	    profitLossRatioStatus: string;
 	    outSampleAvgReturn: number;
 	    outSampleMaxDrawdown: number;
 	    outSampleTradeCount: number;
 	    benchmarkAvailable: boolean;
+	    benchmarkReturn: number;
+	    excessReturn: number;
 	    dataCoverage: number;
 	    noLookaheadPassed: boolean;
 	    backtestConfigJson: string;
+	    verdictJson: string;
 	    generationSource: string;
 	    schemaVersion: string;
+	    registryVersion: string;
+	    engineVersion: string;
 	    strategyVersion: string;
 	    featureVersion: string;
+	    lastVerdictStatus: string;
+	    // Go type: time
+	    paperTradeStartedAt?: any;
+	    paperTradeDays: number;
+	    paperTradeCount: number;
+	    paperNav: number;
+	    paperMaxDrawdown: number;
+	    paperCash: number;
+	    paperMarketValue: number;
+	    paperPositionCount: number;
+	    paperReady: boolean;
+	    paperReadyReason: string;
+	    paperLastProcessedDate: string;
+	    // Go type: time
+	    reviewDueAt?: any;
 	    validReturn: number;
 	    validCount: number;
 	    status: string;
@@ -3152,17 +3219,36 @@ export namespace models {
 	        this.totalReturn = source["totalReturn"];
 	        this.medianReturn = source["medianReturn"];
 	        this.profitLossRatio = source["profitLossRatio"];
+	        this.profitLossRatioStatus = source["profitLossRatioStatus"];
 	        this.outSampleAvgReturn = source["outSampleAvgReturn"];
 	        this.outSampleMaxDrawdown = source["outSampleMaxDrawdown"];
 	        this.outSampleTradeCount = source["outSampleTradeCount"];
 	        this.benchmarkAvailable = source["benchmarkAvailable"];
+	        this.benchmarkReturn = source["benchmarkReturn"];
+	        this.excessReturn = source["excessReturn"];
 	        this.dataCoverage = source["dataCoverage"];
 	        this.noLookaheadPassed = source["noLookaheadPassed"];
 	        this.backtestConfigJson = source["backtestConfigJson"];
+	        this.verdictJson = source["verdictJson"];
 	        this.generationSource = source["generationSource"];
 	        this.schemaVersion = source["schemaVersion"];
+	        this.registryVersion = source["registryVersion"];
+	        this.engineVersion = source["engineVersion"];
 	        this.strategyVersion = source["strategyVersion"];
 	        this.featureVersion = source["featureVersion"];
+	        this.lastVerdictStatus = source["lastVerdictStatus"];
+	        this.paperTradeStartedAt = this.convertValues(source["paperTradeStartedAt"], null);
+	        this.paperTradeDays = source["paperTradeDays"];
+	        this.paperTradeCount = source["paperTradeCount"];
+	        this.paperNav = source["paperNav"];
+	        this.paperMaxDrawdown = source["paperMaxDrawdown"];
+	        this.paperCash = source["paperCash"];
+	        this.paperMarketValue = source["paperMarketValue"];
+	        this.paperPositionCount = source["paperPositionCount"];
+	        this.paperReady = source["paperReady"];
+	        this.paperReadyReason = source["paperReadyReason"];
+	        this.paperLastProcessedDate = source["paperLastProcessedDate"];
+	        this.reviewDueAt = this.convertValues(source["reviewDueAt"], null);
 	        this.validReturn = source["validReturn"];
 	        this.validCount = source["validCount"];
 	        this.status = source["status"];
@@ -3216,6 +3302,10 @@ export namespace models {
 	    universeJson: string;
 	    startDate: string;
 	    endDate: string;
+	    researchEndDate: string;
+	    aiConfigId: number;
+	    marketState: string;
+	    marketReturn: number;
 	    status: string;
 	    errorMsg: string;
 	    // Go type: time
@@ -3233,6 +3323,10 @@ export namespace models {
 	        this.universeJson = source["universeJson"];
 	        this.startDate = source["startDate"];
 	        this.endDate = source["endDate"];
+	        this.researchEndDate = source["researchEndDate"];
+	        this.aiConfigId = source["aiConfigId"];
+	        this.marketState = source["marketState"];
+	        this.marketReturn = source["marketReturn"];
 	        this.status = source["status"];
 	        this.errorMsg = source["errorMsg"];
 	        this.createdAt = this.convertValues(source["createdAt"], null);

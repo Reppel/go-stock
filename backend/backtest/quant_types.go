@@ -6,11 +6,104 @@ import (
 )
 
 const (
-	CurrentStrategyVersion  = "strategy_v3"
-	CurrentFeatureVersion   = "daily_v2_qfq"
-	MinPoolStrategySamples  = 30
-	MinStockStrategySamples = 10
+	CurrentStrategyVersion   = "strategy_v4"
+	CurrentFeatureVersion    = "daily_v2_qfq"
+	CurrentEngineVersion     = "quant-engine/v3"
+	CurrentVerdictVersion    = "quant-verdict/v2"
+	MinPoolStrategySamples   = 30
+	MinStockStrategySamples  = 10
+	MinPaperTradeValidations = 10
 )
+
+type ResearchIdea struct {
+	ID               string                    `json:"id"`
+	SchemaVersion    string                    `json:"schemaVersion"`
+	Template         string                    `json:"template"`
+	Source           string                    `json:"source"`
+	Scene            string                    `json:"scene"`
+	StockScope       string                    `json:"stockScope"`
+	Theme            string                    `json:"theme"`
+	CandidateFactors []ResearchCandidateFactor `json:"candidateFactors"`
+	RuleIdeas        []string                  `json:"ruleIdeas"`
+	DataEvidence     []string                  `json:"dataEvidence"`
+	RiskHypotheses   []string                  `json:"riskHypotheses"`
+	Questions        []string                  `json:"questions"`
+	CreatedAt        string                    `json:"createdAt"`
+}
+
+type ResearchCandidateFactor struct {
+	FactorID   string                 `json:"factorId"`
+	Source     string                 `json:"source"`
+	Evidence   ResearchFactorEvidence `json:"evidence"`
+	Confidence string                 `json:"confidence"`
+}
+
+type ResearchFactorEvidence struct {
+	StartDate        string  `json:"startDate"`
+	EndDate          string  `json:"endDate"`
+	Horizon          int     `json:"horizon"`
+	SampleSize       int     `json:"sampleSize"`
+	IC               float64 `json:"ic"`
+	RankIC           float64 `json:"rankIC"`
+	HitRate          float64 `json:"hitRate"`
+	AvgForwardReturn float64 `json:"avgForwardReturn"`
+	PValue           float64 `json:"pValue"`
+	SectorIC         float64 `json:"sectorIC"`
+	SectorICStd      float64 `json:"sectorICStd"`
+	TimeDecay        string  `json:"timeDecay"`
+	RecentIC         float64 `json:"recentIC"`
+}
+
+type QuantVerdict struct {
+	Version            string             `json:"version"`
+	Layer              string             `json:"layer"`
+	Status             string             `json:"status"`
+	Reasons            []string           `json:"reasons"`
+	Risks              []string           `json:"risks"`
+	RequiredActions    []string           `json:"requiredActions"`
+	CostSensitivity    []CostStressResult `json:"costSensitivity"`
+	OverfitDiagnostics OverfitDiagnostics `json:"overfitDiagnostics"`
+	Turnover           TurnoverBreakdown  `json:"turnover"`
+	GeneratedAt        time.Time          `json:"generatedAt"`
+}
+
+type CostStressResult struct {
+	Name        string  `json:"name"`
+	Slippage    float64 `json:"slippage"`
+	FeeRate     float64 `json:"feeRate"`
+	TotalReturn float64 `json:"totalReturn"`
+	AvgReturn   float64 `json:"avgReturn"`
+	MaxDrawdown float64 `json:"maxDrawdown"`
+	TradeCount  int     `json:"tradeCount"`
+	Passed      bool    `json:"passed"`
+}
+
+type OverfitDiagnostics struct {
+	OutSampleDecay     float64                 `json:"outSampleDecay"`
+	FoldConsistency    float64                 `json:"foldConsistency"`
+	ParameterStability string                  `json:"parameterStability"`
+	ParameterStress    []ParameterStressResult `json:"parameterStress"`
+	RuleComplexity     int                     `json:"ruleComplexity"`
+	SectorIC           float64                 `json:"sectorIC"`
+	SectorICStd        float64                 `json:"sectorICStd"`
+	ICDecay            float64                 `json:"icDecay"`
+	ResearchSamples    int                     `json:"researchSamples"`
+	Warnings           []string                `json:"warnings"`
+}
+
+type ParameterStressResult struct {
+	Name        string  `json:"name"`
+	AvgReturn   float64 `json:"avgReturn"`
+	MaxDrawdown float64 `json:"maxDrawdown"`
+	TradeCount  int     `json:"tradeCount"`
+	Passed      bool    `json:"passed"`
+}
+
+type TurnoverBreakdown struct {
+	BuyTurnover      float64 `json:"buyTurnover"`
+	SellTurnover     float64 `json:"sellTurnover"`
+	TwoSidedTurnover float64 `json:"twoSidedTurnover"`
+}
 
 type QuantSignalSide string
 

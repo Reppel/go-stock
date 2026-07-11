@@ -72,6 +72,12 @@ func (s *PositionSizer) SizeWithAccount(
 		result.EstimatedRelease = result.SuggestedAmount
 	case "BUY", "ADD":
 		baseAmount := holdingMarketValue
+		if !account.CashConfigured && baseAmount <= 0 {
+			result.AccountWarning = "未配置可用资金和总资产，买入/加仓仅给出目标比例，不生成可执行数量"
+			result.SuggestedQuantity = 0
+			result.SuggestedAmount = 0
+			return result
+		}
 		if baseAmount <= 0 {
 			baseAmount = currentPrice * float64(account.MinTradeUnit)
 		}
@@ -94,9 +100,6 @@ func (s *PositionSizer) SizeWithAccount(
 			result.AccountWarning = "未配置可用资金，买入/加仓仅给比例和最小一手试探金额"
 		}
 		qty := s.roundDownLot(int64(math.Floor(amount / currentPrice)))
-		if qty <= 0 && !account.CashConfigured {
-			qty = account.MinTradeUnit
-		}
 		result.SuggestedQuantity = qty
 		result.SuggestedAmount = float64(qty) * currentPrice
 	default:

@@ -72,6 +72,7 @@ func AutoMigrate() {
 	Dao.AutoMigrate(&models.PredictionTrade{})
 	Dao.AutoMigrate(&models.TradeDecisionLog{})
 	Dao.AutoMigrate(&models.PredictionGenerationAudit{})
+	Dao.AutoMigrate(&models.PredictionResearchIdea{})
 	Dao.AutoMigrate(&models.MarketFactorDaily{})
 	Dao.AutoMigrate(&models.StockMoneyFlowDaily{})
 	Dao.AutoMigrate(&models.SectorFlowDaily{})

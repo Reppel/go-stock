@@ -68,13 +68,29 @@ import {
   MarkPredictionAlertStatus,
   GetAiConfigs,
   GetTradingPositionSummaries,
-  GetTradingRecordsByStock
+  GetTradingRecordsByStock,
+  GenerateCandidateSnapshot,
+  GetCandidateSnapshot,
+  GetCandidateSnapshots,
+  CreatePredictionSessionFromCandidate
 } from '../../wailsjs/go/main/App'
 
 const scenes = [
   {label: '短线爆发', value: '短线爆发'},
   {label: '波段反弹', value: '波段反弹'},
   {label: '趋势持有', value: '趋势持有'},
+]
+
+const candidateScenes = [
+  ...scenes,
+  {label: '长期配置（仅观察）', value: '长期配置'},
+]
+const candidateSourceOptions = [
+  {label: '股票推荐记录', value: 'recommendation'},
+  {label: '异动监控', value: 'event'},
+  {label: '涨停梯队', value: 'uplimit'},
+  {label: '形态选股', value: 'pattern'},
+  {label: '指标选股', value: 'indicator'},
 ]
 
 const scopes = [
@@ -163,6 +179,24 @@ const selectedBacktestId = ref(null)
 const selectedDecision = ref(null)
 const decisionDrawerVisible = ref(false)
 const sessionViewMode = ref('history')
+const candidateLoading = ref(false)
+const candidateSnapshots = ref([])
+const candidateDetails = ref(null)
+const candidateDrawerVisible = ref(false)
+const selectedCandidate = ref(null)
+const candidateForm = ref({
+  scene: '短线爆发',
+  stockScope: '全部A股',
+  tradeDate: formatDate(Date.now()),
+  sources: candidateSourceOptions.map(item => item.value),
+  sourceMode: 'union',
+  minimumSources: 1,
+  limit: 100,
+  indicatorQuery: '',
+  stockCodes: [],
+  sourceItems: [],
+  sourceItemSource: '',
+})
 let chartInstance = null
 let paperChartInstance = null
 
@@ -182,6 +216,7 @@ onMounted(async () => {
     loadPredictionSessions()
   ])
   await openLatestSession()
+  await loadCandidateSnapshots()
 })
 
 onUnmounted(() => {
@@ -284,6 +319,156 @@ watch(activeAnalysisView, (view) => {
     void selectBacktest(selectedBacktestHypothesis.value)
   }
 })
+
+function jsonValue(value, fallback) {
+  if (value == null || value === '') return fallback
+  if (typeof value !== 'string') return value
+  try {
+    return JSON.parse(value)
+  } catch (_) {
+    return fallback
+  }
+}
+
+function candidateSources(row) {
+  return jsonValue(row?.sourcesJson, [])
+}
+
+function candidateAdvice(row) {
+  return jsonValue(row?.adviceJson, {})
+}
+
+function candidateReasons(row) {
+  return jsonValue(row?.reasonsJson, [])
+}
+
+function candidateRisks(row) {
+  return jsonValue(row?.risksJson, [])
+}
+
+function sourceLabel(source) {
+  return candidateSourceOptions.find(item => item.value === source)?.label || source
+}
+
+function sceneScore(row, scene = candidateForm.value.scene) {
+  if (scene === '波段反弹') return Number(row?.swingScore || 0)
+  if (scene === '趋势持有') return Number(row?.trendScore || 0)
+  if (scene === '长期配置') return Number(row?.longTermScore ?? -1)
+  return Number(row?.shortScore || 0)
+}
+
+async function loadCandidateSnapshots() {
+  try {
+    candidateSnapshots.value = await GetCandidateSnapshots(30, '') || []
+  } catch (err) {
+    console.warn('加载候选快照失败', err)
+  }
+}
+
+async function openCandidateSnapshot(snapshotId) {
+  candidateLoading.value = true
+  try {
+    const res = await GetCandidateSnapshot(Number(snapshotId), '')
+    if (!res || res.code !== 1) throw new Error(res?.msg || '候选快照不存在')
+    candidateDetails.value = res.data
+    candidateForm.value.scene = res.data?.snapshot?.scene || candidateForm.value.scene
+  } catch (err) {
+    message.error('打开候选快照失败: ' + (err?.message || String(err)))
+  } finally {
+    candidateLoading.value = false
+  }
+}
+
+async function generateCandidates(overrides = {}) {
+  if (!(overrides.sources || candidateForm.value.sources || []).length) {
+    message.warning('至少选择一个候选来源')
+    return
+  }
+  candidateLoading.value = true
+  activeWorkspace.value = 'opportunities'
+  try {
+    const request = {...candidateForm.value, ...overrides}
+    if (request.sources.length !== 1 || request.sources[0] !== request.sourceItemSource) {
+      request.sourceItems = []
+    }
+    request.minimumSources = request.sourceMode === 'intersection'
+        ? request.sources.length
+        : Math.min(Number(request.minimumSources || 1), request.sources.length)
+    const res = await GenerateCandidateSnapshot(request)
+    if (!res || res.code !== 1) throw new Error(res?.msg || '生成候选池失败')
+    candidateDetails.value = res.data
+    await loadCandidateSnapshots()
+    message.success(`已生成 ${res.data?.snapshot?.candidateCount || 0} 只候选，仅作为量化验证入口`)
+  } catch (err) {
+    message.error('生成候选池失败: ' + (err?.message || String(err)))
+  } finally {
+    candidateLoading.value = false
+  }
+}
+
+function handleCandidateSourceRequest(payload = {}) {
+  const source = String(payload.source || '').trim()
+  const sources = candidateSourceOptions.some(item => item.value === source) ? [source] : candidateForm.value.sources
+  candidateForm.value.scene = payload.scene || candidateForm.value.scene
+  candidateForm.value.tradeDate = payload.tradeDate || formatDate(Date.now())
+  candidateForm.value.indicatorQuery = payload.indicatorQuery || ''
+  candidateForm.value.stockCodes = Array.isArray(payload.stockCodes) ? payload.stockCodes : []
+  candidateForm.value.sourceItems = Array.isArray(payload.sourceItems) ? payload.sourceItems : []
+  candidateForm.value.sourceItemSource = source
+  void generateCandidates({
+    sources,
+    stockCodes: candidateForm.value.stockCodes,
+    sourceItems: candidateForm.value.sourceItems,
+    sourceItemSource: source,
+    scene: candidateForm.value.scene,
+    tradeDate: candidateForm.value.tradeDate,
+    sourceMode: 'union',
+    minimumSources: 1,
+    indicatorQuery: payload.indicatorQuery || '',
+  })
+}
+
+defineExpose({handleCandidateSourceRequest})
+
+function openCandidateAdvice(row) {
+  selectedCandidate.value = row
+  candidateDrawerVisible.value = true
+}
+
+async function validateCandidateSnapshot() {
+  const snapshot = candidateDetails.value?.snapshot
+  if (!snapshot?.id) return
+  if (candidateForm.value.scene === '长期配置') {
+    message.warning('长期配置缺少点时基本面和估值，目前只能保存观察，不能进入正式量化验证')
+    return
+  }
+  if (!form.value.aiConfigId) {
+    message.warning('请先选择 AI 配置')
+    return
+  }
+  candidateLoading.value = true
+  try {
+    const res = await CreatePredictionSessionFromCandidate(
+        snapshot.id,
+        candidateForm.value.scene,
+        formatDate(form.value.startDate),
+        formatDate(form.value.endDate),
+        Number(form.value.aiConfigId)
+    )
+    if (!res || res.code !== 1) throw new Error(res?.msg || '量化验证创建失败')
+    sessionResult.value = res.data
+    sessionViewMode.value = 'current'
+    form.value.scene = candidateForm.value.scene
+    activeWorkspace.value = 'analysis'
+    activeAnalysisView.value = 'backtests'
+    await Promise.all([loadPredictionSessions(), loadMyHypotheses(), loadCandidateSnapshots()])
+    message.success('候选快照已进入回测、裁决和前向验证链路')
+  } catch (err) {
+    message.error('进入量化验证失败: ' + (err?.message || String(err)))
+  } finally {
+    candidateLoading.value = false
+  }
+}
 
 async function loadAiConfigs() {
   aiConfigLoading.value = true
@@ -1189,6 +1374,98 @@ function formatDate(ts) {
     </header>
 
     <n-tabs v-model:value="activeWorkspace" type="line" animated class="workspace-tabs">
+      <n-tab-pane name="opportunities">
+        <template #tab>
+          <span class="tab-label"><n-icon :component="TrendingUpOutline"/>机会发现</span>
+        </template>
+        <section class="workspace-page opportunity-page">
+          <n-alert type="info" :show-icon="false">
+            五类页面数据先形成带来源、版本和可用时间的候选快照；这里的 WATCH 不是买入指令，进入量化验证后才会执行回测、裁决和前向模拟。
+          </n-alert>
+          <n-card size="small" title="五源候选池" class="candidate-command-card">
+            <n-form :model="candidateForm" label-placement="top" :show-feedback="false" class="candidate-form">
+              <n-form-item label="投资场景"><n-select v-model:value="candidateForm.scene" :options="candidateScenes"/></n-form-item>
+              <n-form-item label="数据来源" class="candidate-source-field">
+                <n-select v-model:value="candidateForm.sources" multiple :options="candidateSourceOptions" max-tag-count="responsive"/>
+              </n-form-item>
+              <n-form-item label="合并方式">
+                <n-select v-model:value="candidateForm.sourceMode" :options="[
+                  {label: '并集：任一来源命中', value: 'union'},
+                  {label: '共识：至少 N 个来源', value: 'consensus'},
+                  {label: '交集：全部来源命中', value: 'intersection'}
+                ]"/>
+              </n-form-item>
+              <n-form-item v-if="candidateForm.sourceMode === 'consensus'" label="最少来源">
+                <n-input-number v-model:value="candidateForm.minimumSources" :min="2" :max="candidateForm.sources.length || 2"/>
+              </n-form-item>
+              <n-form-item label="数据日期"><n-input v-model:value="candidateForm.tradeDate" placeholder="YYYY-MM-DD"/></n-form-item>
+              <n-form-item label="最多候选"><n-input-number v-model:value="candidateForm.limit" :min="10" :max="500"/></n-form-item>
+              <n-form-item class="candidate-generate-action">
+                <n-button type="primary" :loading="candidateLoading" @click="generateCandidates()">生成候选快照</n-button>
+              </n-form-item>
+            </n-form>
+          </n-card>
+
+          <div class="candidate-layout">
+            <n-card size="small" title="历史快照" class="candidate-history-card">
+              <div class="candidate-history-list" v-if="candidateSnapshots.length">
+                <button v-for="row in candidateSnapshots" :key="row.id" type="button"
+                        class="candidate-history-item"
+                        :class="{active: candidateDetails?.snapshot?.id === row.id}"
+                        @click="openCandidateSnapshot(row.id)">
+                  <span><strong>{{ row.name || `快照 #${row.id}` }}</strong><small>{{ row.tradeDate }} · {{ row.scene }}</small></span>
+                  <n-tag size="small" :type="row.status === 'failed' ? 'error' : (row.status === 'validated' ? 'success' : 'info')">
+                    {{ row.candidateCount || 0 }} 只
+                  </n-tag>
+                </button>
+              </div>
+              <n-empty v-else size="small" description="尚未生成候选快照"/>
+            </n-card>
+
+            <n-card size="small" class="candidate-result-card">
+              <template #header>
+                <div class="panel-heading">
+                  <span>候选结果</span>
+                  <n-space v-if="candidateDetails?.snapshot" align="center" size="small">
+                    <n-tag size="small" type="info">覆盖 {{ formatRatio(candidateDetails.snapshot.coverage) }}</n-tag>
+                    <n-button size="small" type="primary" :disabled="candidateForm.scene === '长期配置'" :loading="candidateLoading" @click="validateCandidateSnapshot">
+                      进入量化验证
+                    </n-button>
+                  </n-space>
+                </div>
+              </template>
+              <n-spin :show="candidateLoading">
+                <div class="candidate-freshness" v-if="candidateDetails?.freshness">
+                  <n-tag v-for="fresh in Object.values(candidateDetails.freshness)" :key="fresh.source" size="small"
+                         :type="fresh.available ? 'success' : 'warning'">
+                    {{ sourceLabel(fresh.source) }} {{ fresh.itemCount || 0 }} · {{ formatDateTime(fresh.availableAt) }}
+                  </n-tag>
+                </div>
+                <n-alert v-if="candidateForm.scene === '长期配置'" type="warning" :show-icon="false" class="candidate-long-warning">
+                  当前五源缺少历史时点基本面、估值和财务质量，长期评分标记为不可用，不输出长期买入建议。
+                </n-alert>
+                <div class="table-shell" v-if="candidateDetails?.items?.length">
+                  <n-table size="small" :bordered="false" :single-line="false" class="candidate-table">
+                    <thead><tr><th>排名</th><th>股票</th><th>来源</th><th>规则适配分</th><th>最适场景</th><th>候选建议</th><th></th></tr></thead>
+                    <tbody>
+                    <tr v-for="(row, index) in candidateDetails.items" :key="row.id || row.stockCode">
+                      <td>#{{ index + 1 }}</td>
+                      <td><n-text strong>{{ row.stockName || row.stockCode }}</n-text><br><n-text depth="3">{{ row.stockCode }} · {{ row.industry || '-' }}</n-text></td>
+                      <td><n-space size="small"><n-tag v-for="source in candidateSources(row)" :key="source" size="small" :bordered="false">{{ sourceLabel(source) }}</n-tag></n-space></td>
+                      <td><n-text strong v-if="sceneScore(row) >= 0">{{ sceneScore(row).toFixed(1) }}</n-text><n-tag v-else size="small" type="warning">数据不足</n-tag></td>
+                      <td>{{ row.bestScene || '-' }}</td>
+                      <td><n-tag size="small" type="info">{{ candidateAdvice(row).action || 'WATCH' }}</n-tag><br><n-text depth="3">仅候选</n-text></td>
+                      <td><n-button size="tiny" text type="primary" @click="openCandidateAdvice(row)">依据与风险</n-button></td>
+                    </tr>
+                    </tbody>
+                  </n-table>
+                </div>
+                <n-empty v-else description="选择历史快照或生成新的五源候选池"/>
+              </n-spin>
+            </n-card>
+          </div>
+        </section>
+      </n-tab-pane>
       <n-tab-pane name="analysis">
         <template #tab>
           <span class="tab-label"><n-icon :component="AnalyticsOutline"/>分析工作台</span>
@@ -1790,6 +2067,43 @@ function formatDate(ts) {
         </section>
       </n-tab-pane>
     </n-tabs>
+
+    <n-drawer v-model:show="candidateDrawerVisible" :width="480" placement="right">
+      <n-drawer-content :title="`${selectedCandidate?.stockName || selectedCandidate?.stockCode || '候选'} · 候选依据`" closable>
+        <template v-if="selectedCandidate">
+          <div class="drawer-metrics">
+            <div><span>短线</span><b>{{ Number(selectedCandidate.shortScore || 0).toFixed(1) }}</b></div>
+            <div><span>波段</span><b>{{ Number(selectedCandidate.swingScore || 0).toFixed(1) }}</b></div>
+            <div><span>趋势</span><b>{{ Number(selectedCandidate.trendScore || 0).toFixed(1) }}</b></div>
+            <div><span>来源数</span><b>{{ selectedCandidate.sourceCount || 0 }}</b></div>
+          </div>
+          <section class="drawer-section">
+            <div class="drawer-section-title">来源链路</div>
+            <n-space><n-tag v-for="source in candidateSources(selectedCandidate)" :key="source" size="small">{{ sourceLabel(source) }}</n-tag></n-space>
+            <n-text depth="3">可用时间 {{ formatDateTime(selectedCandidate.availableAt) }} · {{ selectedCandidate.scorerVersion }}</n-text>
+          </section>
+          <section class="drawer-section">
+            <div class="drawer-section-title">命中理由</div>
+            <ul class="signal-list"><li v-for="reason in candidateReasons(selectedCandidate)" :key="reason">{{ reason }}</li></ul>
+          </section>
+          <section class="drawer-section">
+            <div class="drawer-section-title">风险与失效条件</div>
+            <ul class="signal-list"><li v-for="risk in candidateRisks(selectedCandidate)" :key="risk">{{ risk }}</li></ul>
+          </section>
+          <section class="drawer-section">
+            <div class="drawer-section-title">观察计划</div>
+            <dl class="detail-list">
+              <div><dt>状态</dt><dd>{{ candidateAdvice(selectedCandidate).status || 'candidate_only' }}</dd></div>
+              <div><dt>参考价</dt><dd>{{ formatPrice(candidateAdvice(selectedCandidate).referencePrice) }}</dd></div>
+              <div><dt>不追高价</dt><dd>{{ formatPrice(candidateAdvice(selectedCandidate).noChasePrice) }}</dd></div>
+              <div><dt>失效止损</dt><dd>{{ formatPrice(candidateAdvice(selectedCandidate).stopLossPrice) }}</dd></div>
+              <div><dt>最长观察</dt><dd>{{ candidateAdvice(selectedCandidate).maxHoldingDays || '-' }} 个交易日</dd></div>
+            </dl>
+            <n-alert type="warning" :show-icon="false">{{ candidateAdvice(selectedCandidate).formalAdviceReason || '必须先通过量化验证和前向模拟。' }}</n-alert>
+          </section>
+        </template>
+      </n-drawer-content>
+    </n-drawer>
 
     <n-drawer v-model:show="decisionDrawerVisible" :width="480" placement="right">
       <n-drawer-content
@@ -2641,6 +2955,101 @@ function formatDate(ts) {
   grid-column: 1 / -1;
 }
 
+.opportunity-page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.candidate-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.candidate-form :deep(.n-form-item) {
+  width: 180px;
+  margin-bottom: 0;
+}
+
+.candidate-form :deep(.candidate-source-field) {
+  width: min(420px, 100%);
+}
+
+.candidate-form :deep(.candidate-generate-action) {
+  width: auto;
+}
+
+.candidate-layout {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.candidate-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 620px;
+  overflow: auto;
+}
+
+.candidate-history-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 10px;
+  border: 1px solid #e3e7ec;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.candidate-history-item.active {
+  border-color: #18a058;
+  background: rgba(24, 160, 88, .06);
+}
+
+.candidate-history-item span:first-child {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.candidate-history-item strong,
+.candidate-history-item small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.candidate-history-item small {
+  margin-top: 3px;
+  color: #7a828e;
+}
+
+.candidate-freshness {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.candidate-long-warning {
+  margin-bottom: 10px;
+}
+
+.candidate-table th,
+.candidate-table td {
+  vertical-align: middle;
+}
+
 @media (max-width: 1180px) {
   .command-field.date-field {
     width: 340px;
@@ -2721,6 +3130,16 @@ function formatDate(ts) {
 
   .monitor-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .candidate-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .candidate-form :deep(.n-form-item),
+  .candidate-form :deep(.candidate-source-field),
+  .candidate-form :deep(.candidate-generate-action) {
+    width: 100%;
   }
 }
 </style>

@@ -4,8 +4,8 @@ import {models} from '../models';
 import {data} from '../models';
 import {context} from '../models';
 import {main} from '../models';
-import {lo} from '../models';
 import {backtest} from '../models';
+import {lo} from '../models';
 
 export function AbortChatWithAgent():Promise<void>;
 
@@ -59,6 +59,8 @@ export function CreateMCPServer(arg1:models.MCPServer):Promise<string>;
 
 export function CreatePredictionSession(arg1:string,arg2:string,arg3:string,arg4:string,arg5:number):Promise<Record<string, any>>;
 
+export function CreatePredictionSessionFromCandidate(arg1:number,arg2:string,arg3:string,arg4:string,arg5:number):Promise<Record<string, any>>;
+
 export function CreateSkill(arg1:models.Skill):Promise<string>;
 
 export function DelPrompt(arg1:number):Promise<string>;
@@ -68,6 +70,8 @@ export function DeleteAIResponseResult(arg1:number):Promise<string>;
 export function DeleteAiRecommendStocks(arg1:number):Promise<string>;
 
 export function DeleteAllStockInfo(arg1:number):Promise<string>;
+
+export function DeleteCandidateSnapshot(arg1:number):Promise<string>;
 
 export function DeleteCronTask(arg1:number):Promise<string>;
 
@@ -106,6 +110,8 @@ export function FetchAndSaveMarketStatistic():Promise<void>;
 export function Follow(arg1:string):Promise<string>;
 
 export function FollowFund(arg1:string):Promise<string>;
+
+export function GenerateCandidateSnapshot(arg1:backtest.CandidateGenerateRequest):Promise<Record<string, any>>;
 
 export function GetAIResponseResult(arg1:string):Promise<models.AIResponseResult>;
 
@@ -150,6 +156,10 @@ export function GetBKFundFlowListByDate(arg1:string,arg2:string):Promise<Array<m
 export function GetBKFundFlowTopList(arg1:number):Promise<Array<models.BKFundFlow>>;
 
 export function GetBKFundFlowTopListByDate(arg1:string,arg2:number):Promise<Array<models.BKFundFlow>>;
+
+export function GetCandidateSnapshot(arg1:number,arg2:string):Promise<Record<string, any>>;
+
+export function GetCandidateSnapshots(arg1:number,arg2:string):Promise<Array<models.CandidateSnapshot>>;
 
 export function GetChangeRank(arg1:number,arg2:number):Promise<data.ChangeRankResult>;
 

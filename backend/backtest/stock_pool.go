@@ -4,6 +4,7 @@ import (
 	"go-stock/backend/data"
 	"go-stock/backend/db"
 	"go-stock/backend/models"
+	"strconv"
 	"strings"
 )
 
@@ -38,8 +39,32 @@ func (s *StockPoolService) GetStockPool(scope string) []string {
 			groupID := strings.TrimPrefix(scope, "group_")
 			return s.getGroupStockCodes(groupID)
 		}
+		if strings.HasPrefix(scope, "snapshot_") {
+			snapshotID := strings.TrimSpace(strings.TrimPrefix(scope, "snapshot_"))
+			return s.getCandidateSnapshotCodes(snapshotID)
+		}
 		return s.getAllAStockCodes()
 	}
+}
+
+func candidateSnapshotIDFromScope(scope string) uint {
+	value := strings.TrimPrefix(strings.TrimSpace(scope), "snapshot_")
+	if value == strings.TrimSpace(scope) {
+		return 0
+	}
+	id, _ := strconv.ParseUint(value, 10, 64)
+	return uint(id)
+}
+
+func (s *StockPoolService) getCandidateSnapshotCodes(snapshotID string) []string {
+	if snapshotID == "" || db.Dao == nil {
+		return nil
+	}
+	var codes []string
+	db.Dao.Model(&models.CandidateSnapshotItem{}).
+		Where("snapshot_id = ?", snapshotID).
+		Order("source_rank asc").Pluck("stock_code", &codes)
+	return uniqueStrings(codes)
 }
 
 func isAllStockScope(scope string) bool {

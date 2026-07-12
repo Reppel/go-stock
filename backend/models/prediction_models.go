@@ -4,19 +4,22 @@ import "time"
 
 // PredictionSession 用户一次完整的预测请求
 type PredictionSession struct {
-	ID              uint      `json:"id" gorm:"primarykey" md:"-"`
-	Scene           string    `json:"scene" gorm:"size:50;index" md:"预测场景"` // 短线爆发/波段反弹/趋势持有
-	StockScope      string    `json:"stockScope" gorm:"size:100" md:"股票池"`  // 全市场/自选股/某分组
-	UniverseJSON    string    `json:"universeJson" gorm:"type:text" md:"股票池快照JSON"`
-	StartDate       string    `json:"startDate" gorm:"size:10" md:"回测开始日期"` // 回测开始
-	EndDate         string    `json:"endDate" gorm:"size:10" md:"回测结束日期"`   // 回测结束
-	ResearchEndDate string    `json:"researchEndDate" gorm:"size:10" md:"研究窗口截止"`
-	AIConfigID      int       `json:"aiConfigId" md:"AI配置ID"`
-	MarketState     string    `json:"marketState" gorm:"size:30" md:"研究期市场状态"`
-	MarketReturn    float64   `json:"marketReturn" md:"研究期基准收益"`
-	Status          string    `json:"status" gorm:"size:20" md:"状态"` // running/done/failed
-	ErrorMsg        string    `json:"errorMsg" gorm:"size:500" md:"错误信息"`
-	CreatedAt       time.Time `json:"createdAt" gorm:"autoCreateTime" md:"-"`
+	ID                    uint      `json:"id" gorm:"primarykey" md:"-"`
+	CandidateSnapshotID   uint      `json:"candidateSnapshotId" gorm:"index" md:"候选快照ID"`
+	UniverseSelectionMode string    `json:"universeSelectionMode" gorm:"size:40" md:"股票池选择模式"`
+	SelectionAsOf         time.Time `json:"selectionAsOf" md:"股票池选择时点"`
+	Scene                 string    `json:"scene" gorm:"size:50;index" md:"预测场景"` // 短线爆发/波段反弹/趋势持有
+	StockScope            string    `json:"stockScope" gorm:"size:100" md:"股票池"`  // 全市场/自选股/某分组
+	UniverseJSON          string    `json:"universeJson" gorm:"type:text" md:"股票池快照JSON"`
+	StartDate             string    `json:"startDate" gorm:"size:10" md:"回测开始日期"` // 回测开始
+	EndDate               string    `json:"endDate" gorm:"size:10" md:"回测结束日期"`   // 回测结束
+	ResearchEndDate       string    `json:"researchEndDate" gorm:"size:10" md:"研究窗口截止"`
+	AIConfigID            int       `json:"aiConfigId" md:"AI配置ID"`
+	MarketState           string    `json:"marketState" gorm:"size:30" md:"研究期市场状态"`
+	MarketReturn          float64   `json:"marketReturn" md:"研究期基准收益"`
+	Status                string    `json:"status" gorm:"size:20" md:"状态"` // running/done/failed
+	ErrorMsg              string    `json:"errorMsg" gorm:"size:500" md:"错误信息"`
+	CreatedAt             time.Time `json:"createdAt" gorm:"autoCreateTime" md:"-"`
 }
 
 func (PredictionSession) TableName() string {
@@ -27,6 +30,8 @@ func (PredictionSession) TableName() string {
 type PredictionHypothesis struct {
 	ID                     uint       `json:"id" gorm:"primarykey" md:"-"`
 	SessionID              uint       `json:"sessionId" gorm:"index" md:"会话ID"`
+	UniverseSelectionMode  string     `json:"universeSelectionMode" gorm:"size:40;index" md:"股票池选择模式"`
+	BacktestDiagnosticOnly bool       `json:"backtestDiagnosticOnly" gorm:"default:false" md:"历史回测仅诊断"`
 	Name                   string     `json:"name" gorm:"size:100" md:"假设名称"`
 	Description            string     `json:"description" gorm:"size:500" md:"假设描述"`
 	Scene                  string     `json:"scene" gorm:"size:50;index" md:"场景"`
@@ -534,9 +539,11 @@ func (SectorFlowDaily) TableName() string {
 
 type StockEventDaily struct {
 	ID               uint      `json:"id" gorm:"primarykey"`
-	StockCode        string    `json:"stockCode" gorm:"size:20;index:idx_stock_event_code_date"`
-	TradeDate        string    `json:"tradeDate" gorm:"size:10;index:idx_stock_event_code_date"`
+	StockCode        string    `json:"stockCode" gorm:"size:20;uniqueIndex:uidx_stock_event_code_date_version"`
+	TradeDate        string    `json:"tradeDate" gorm:"size:10;uniqueIndex:uidx_stock_event_code_date_version"`
+	FeatureVersion   string    `json:"featureVersion" gorm:"size:50;uniqueIndex:uidx_stock_event_code_date_version"`
 	DataAsOf         time.Time `json:"dataAsOf"`
+	AvailableAt      time.Time `json:"availableAt" gorm:"index"`
 	ChangeEventCount int       `json:"changeEventCount"`
 	HasLargeBuy      bool      `json:"hasLargeBuy"`
 	HasLargeSell     bool      `json:"hasLargeSell"`
@@ -566,6 +573,231 @@ type StockRiskEvent struct {
 func (StockRiskEvent) TableName() string {
 	return "stock_risk_event"
 }
+
+// CandidateSnapshot records one point-in-time candidate-universe build. External
+// source results are never read directly by the strategy DSL; they enter here first.
+type CandidateSnapshot struct {
+	ID              uint      `json:"id" gorm:"primarykey"`
+	SnapshotKey     string    `json:"snapshotKey" gorm:"size:64;uniqueIndex"`
+	Name            string    `json:"name" gorm:"size:120"`
+	Scene           string    `json:"scene" gorm:"size:50;index"`
+	StockScope      string    `json:"stockScope" gorm:"size:100"`
+	SourcesJSON     string    `json:"sourcesJson" gorm:"type:text"`
+	SourceMode      string    `json:"sourceMode" gorm:"size:20"` // union/intersection/consensus
+	MinimumSources  int       `json:"minimumSources"`
+	QueryJSON       string    `json:"queryJson" gorm:"type:text"`
+	TradeDate       string    `json:"tradeDate" gorm:"size:10;index"`
+	AvailableAt     time.Time `json:"availableAt" gorm:"index"`
+	DataAsOf        time.Time `json:"dataAsOf"`
+	SourceVersion   string    `json:"sourceVersion" gorm:"size:50"`
+	SchemaVersion   string    `json:"schemaVersion" gorm:"size:50"`
+	FeatureVersion  string    `json:"featureVersion" gorm:"size:50"`
+	RegistryVersion string    `json:"registryVersion" gorm:"size:50"`
+	RawHash         string    `json:"rawHash" gorm:"size:64;index"`
+	AblationJSON    string    `json:"ablationJson" gorm:"type:text"`
+	Coverage        float64   `json:"coverage"`
+	CandidateCount  int       `json:"candidateCount"`
+	Status          string    `json:"status" gorm:"size:20;index"` // running/candidate/validated/failed/expired
+	ErrorMessage    string    `json:"errorMessage" gorm:"size:500"`
+	CreatedAt       time.Time `json:"createdAt" gorm:"autoCreateTime"`
+	UpdatedAt       time.Time `json:"updatedAt" gorm:"autoUpdateTime"`
+}
+
+func (CandidateSnapshot) TableName() string { return "candidate_snapshot" }
+
+// CandidateSnapshotItem is a normalized stock candidate with complete source
+// attribution and independent scores for each investment scene.
+type CandidateSnapshotItem struct {
+	ID               uint      `json:"id" gorm:"primarykey"`
+	SnapshotID       uint      `json:"snapshotId" gorm:"index;uniqueIndex:uidx_candidate_snapshot_stock"`
+	StockCode        string    `json:"stockCode" gorm:"size:20;index;uniqueIndex:uidx_candidate_snapshot_stock"`
+	StockName        string    `json:"stockName" gorm:"size:50"`
+	Industry         string    `json:"industry" gorm:"size:100;index"`
+	Concept          string    `json:"concept" gorm:"size:500"`
+	SourceRank       int       `json:"sourceRank"`
+	SourceScore      float64   `json:"sourceScore"`
+	SourceCount      int       `json:"sourceCount" gorm:"index"`
+	SourcesJSON      string    `json:"sourcesJson" gorm:"type:text"`
+	BestScene        string    `json:"bestScene" gorm:"size:50;index"`
+	ShortScore       float64   `json:"shortScore"`
+	SwingScore       float64   `json:"swingScore"`
+	TrendScore       float64   `json:"trendScore"`
+	LongTermScore    float64   `json:"longTermScore"`
+	MatchedFacts     string    `json:"matchedFacts" gorm:"type:text"`
+	ReasonsJSON      string    `json:"reasonsJson" gorm:"type:text"`
+	RisksJSON        string    `json:"risksJson" gorm:"type:text"`
+	AdviceJSON       string    `json:"adviceJson" gorm:"type:text"`
+	AvailableAt      time.Time `json:"availableAt"`
+	DataAsOf         time.Time `json:"dataAsOf"`
+	FeatureVersion   string    `json:"featureVersion" gorm:"size:50"`
+	ScorerVersion    string    `json:"scorerVersion" gorm:"size:50"`
+	InputFingerprint string    `json:"inputFingerprint" gorm:"size:64;index"`
+	RawJSON          string    `json:"rawJson" gorm:"type:text"`
+	CreatedAt        time.Time `json:"createdAt" gorm:"autoCreateTime"`
+	UpdatedAt        time.Time `json:"updatedAt" gorm:"autoUpdateTime"`
+}
+
+func (CandidateSnapshotItem) TableName() string { return "candidate_snapshot_item" }
+
+// CandidateSourceFact preserves source-item-level lineage instead of relying
+// only on the merged JSON stored on CandidateSnapshotItem.
+type CandidateSourceFact struct {
+	ID             uint      `json:"id" gorm:"primarykey"`
+	SnapshotID     uint      `json:"snapshotId" gorm:"index;uniqueIndex:uidx_candidate_source_fact"`
+	StockCode      string    `json:"stockCode" gorm:"size:20;index;uniqueIndex:uidx_candidate_source_fact"`
+	Source         string    `json:"source" gorm:"size:30;index;uniqueIndex:uidx_candidate_source_fact"`
+	SourceRecordID string    `json:"sourceRecordId" gorm:"size:100;uniqueIndex:uidx_candidate_source_fact"`
+	SourceRank     int       `json:"sourceRank"`
+	SourceScore    float64   `json:"sourceScore"`
+	EventTime      time.Time `json:"eventTime"`
+	IngestedAt     time.Time `json:"ingestedAt"`
+	AvailableAt    time.Time `json:"availableAt" gorm:"index"`
+	DataAsOf       time.Time `json:"dataAsOf"`
+	SourceVersion  string    `json:"sourceVersion" gorm:"size:50"`
+	FactsJSON      string    `json:"factsJson" gorm:"type:text"`
+	RawHash        string    `json:"rawHash" gorm:"size:64;index"`
+	RawJSON        string    `json:"rawJson" gorm:"type:text"`
+	CreatedAt      time.Time `json:"createdAt" gorm:"autoCreateTime"`
+}
+
+func (CandidateSourceFact) TableName() string { return "candidate_source_fact" }
+
+// ScreeningExecutionSnapshot freezes the exact output received from the
+// pattern/indicator pages. It prevents a page result from being mislabeled as
+// a locally reproduced technical fact.
+type ScreeningExecutionSnapshot struct {
+	ID              uint      `json:"id" gorm:"primarykey"`
+	SnapshotKey     string    `json:"snapshotKey" gorm:"size:64;uniqueIndex"`
+	Source          string    `json:"source" gorm:"size:30;index"`
+	Query           string    `json:"query" gorm:"type:text"`
+	NormalizedQuery string    `json:"normalizedQuery" gorm:"type:text"`
+	TradeDate       string    `json:"tradeDate" gorm:"size:10;index"`
+	AvailableAt     time.Time `json:"availableAt" gorm:"index"`
+	RawHash         string    `json:"rawHash" gorm:"size:64;index"`
+	ResultCount     int       `json:"resultCount"`
+	Status          string    `json:"status" gorm:"size:20;index"`
+	CreatedAt       time.Time `json:"createdAt" gorm:"autoCreateTime"`
+}
+
+func (ScreeningExecutionSnapshot) TableName() string { return "screening_execution_snapshot" }
+
+type ScreeningExecutionItem struct {
+	ID          uint      `json:"id" gorm:"primarykey"`
+	SnapshotID  uint      `json:"snapshotId" gorm:"index;uniqueIndex:uidx_screening_execution_item"`
+	StockCode   string    `json:"stockCode" gorm:"size:20;index;uniqueIndex:uidx_screening_execution_item"`
+	StockName   string    `json:"stockName" gorm:"size:50"`
+	SourceRank  int       `json:"sourceRank"`
+	RawHash     string    `json:"rawHash" gorm:"size:64"`
+	RawJSON     string    `json:"rawJson" gorm:"type:text"`
+	AvailableAt time.Time `json:"availableAt" gorm:"index"`
+	CreatedAt   time.Time `json:"createdAt" gorm:"autoCreateTime"`
+}
+
+func (ScreeningExecutionItem) TableName() string { return "screening_execution_item" }
+
+// StockScreeningFactDaily stores locally reproducible technical pattern flags.
+type StockScreeningFactDaily struct {
+	ID              uint      `json:"id" gorm:"primarykey"`
+	StockCode       string    `json:"stockCode" gorm:"size:20;index;uniqueIndex:uidx_screening_fact_stock_date_version"`
+	TradeDate       string    `json:"tradeDate" gorm:"size:10;index;uniqueIndex:uidx_screening_fact_stock_date_version"`
+	FeatureVersion  string    `json:"featureVersion" gorm:"size:50;uniqueIndex:uidx_screening_fact_stock_date_version"`
+	DataAsOf        time.Time `json:"dataAsOf"`
+	AvailableAt     time.Time `json:"availableAt"`
+	Calculated      bool      `json:"calculated" gorm:"index"`
+	Coverage        float64   `json:"coverage"`
+	Status          string    `json:"status" gorm:"size:20;index"`
+	MACDGoldenCross bool      `json:"macdGoldenCross"`
+	MACDAboveZero   bool      `json:"macdAboveZero"`
+	KDJGoldenCross  bool      `json:"kdjGoldenCross"`
+	MABullish       bool      `json:"maBullish"`
+	MABearish       bool      `json:"maBearish"`
+	BreakMA20       bool      `json:"breakMa20"`
+	BollBreakout    bool      `json:"bollBreakout"`
+	VolumeBreakout  bool      `json:"volumeBreakout"`
+	Oversold        bool      `json:"oversold"`
+	Overbought      bool      `json:"overbought"`
+	PatternCount    int       `json:"patternCount"`
+	ConditionsJSON  string    `json:"conditionsJson" gorm:"type:text"`
+	Source          string    `json:"source" gorm:"size:50"`
+	CreatedAt       time.Time `json:"createdAt" gorm:"autoCreateTime"`
+	UpdatedAt       time.Time `json:"updatedAt" gorm:"autoUpdateTime"`
+}
+
+func (StockScreeningFactDaily) TableName() string { return "stock_screening_fact_daily" }
+
+// UplimitStockDaily is the typed, auditable replacement for the previous
+// unversioned map response used by the limit-up ladder page.
+type UplimitStockDaily struct {
+	ID                uint      `json:"id" gorm:"primarykey"`
+	SnapshotKey       string    `json:"snapshotKey" gorm:"size:64;index;uniqueIndex:uidx_uplimit_stock_snapshot"`
+	StockCode         string    `json:"stockCode" gorm:"size:20;index;uniqueIndex:uidx_uplimit_stock_snapshot"`
+	StockName         string    `json:"stockName" gorm:"size:50"`
+	TradeDate         string    `json:"tradeDate" gorm:"size:10;index"`
+	PlateCode         string    `json:"plateCode" gorm:"size:30;uniqueIndex:uidx_uplimit_stock_snapshot"`
+	PlateName         string    `json:"plateName" gorm:"size:100"`
+	KeepTimes         int       `json:"keepTimes"`
+	LimitType         string    `json:"limitType" gorm:"size:30"`
+	LimitDescription  string    `json:"limitDescription" gorm:"size:100"`
+	LimitTime         string    `json:"limitTime" gorm:"size:10"`
+	FirstLimitTime    string    `json:"firstLimitTime" gorm:"size:10"`
+	FinalLimitTime    string    `json:"finalLimitTime" gorm:"size:10"`
+	SealRatioMax      float64   `json:"sealRatioMax"`
+	SealRatioClose    float64   `json:"sealRatioClose"`
+	Exploded          bool      `json:"exploded" gorm:"index"`
+	ExplodeCount      int       `json:"explodeCount"`
+	Amount            float64   `json:"amount"`
+	MarketCap         float64   `json:"marketCap"`
+	PlateHeat         float64   `json:"plateHeat"`
+	PlateLimitCount   int       `json:"plateLimitCount"`
+	PlateExplodeCount int       `json:"plateExplodeCount"`
+	AvailableAt       time.Time `json:"availableAt"`
+	DataAsOf          time.Time `json:"dataAsOf"`
+	EventTime         time.Time `json:"eventTime"`
+	IngestedAt        time.Time `json:"ingestedAt"`
+	Source            string    `json:"source" gorm:"size:50"`
+	SourceVersion     string    `json:"sourceVersion" gorm:"size:50"`
+	RawHash           string    `json:"rawHash" gorm:"size:64"`
+	RawJSON           string    `json:"rawJson" gorm:"type:text"`
+	CreatedAt         time.Time `json:"createdAt" gorm:"autoCreateTime"`
+	UpdatedAt         time.Time `json:"updatedAt" gorm:"autoUpdateTime"`
+}
+
+func (UplimitStockDaily) TableName() string { return "uplimit_stock_daily" }
+
+// ModelRecommendationEvent converts free-form AI recommendations into a
+// point-in-time meta signal without treating AI output as ground truth.
+type ModelRecommendationEvent struct {
+	ID                     uint      `json:"id" gorm:"primarykey"`
+	RecommendationID       uint      `json:"recommendationId" gorm:"index"`
+	SourceRecordID         string    `json:"sourceRecordId" gorm:"size:100;uniqueIndex:uidx_model_recommendation_event"`
+	StockCode              string    `json:"stockCode" gorm:"size:20;index;uniqueIndex:uidx_model_recommendation_event"`
+	Source                 string    `json:"source" gorm:"size:30;uniqueIndex:uidx_model_recommendation_event"`
+	TradeDate              string    `json:"tradeDate" gorm:"size:10;index"`
+	Scene                  string    `json:"scene" gorm:"size:50;index"`
+	Horizon                int       `json:"horizon"`
+	ModelName              string    `json:"modelName" gorm:"size:100"`
+	ModelVersion           string    `json:"modelVersion" gorm:"size:50"`
+	Rating                 string    `json:"rating" gorm:"size:30"`
+	ReferencePrice         float64   `json:"referencePrice"`
+	BuyPriceMin            float64   `json:"buyPriceMin"`
+	BuyPriceMax            float64   `json:"buyPriceMax"`
+	StopLossPrice          float64   `json:"stopLossPrice"`
+	TakeProfitPrice        float64   `json:"takeProfitPrice"`
+	AvailableAt            time.Time `json:"availableAt"`
+	DataAsOf               time.Time `json:"dataAsOf"`
+	FeatureVersion         string    `json:"featureVersion" gorm:"size:50"`
+	GenerationAuditID      uint      `json:"generationAuditId" gorm:"index"`
+	LineageStatus          string    `json:"lineageStatus" gorm:"size:30;index"`
+	IndependentForResearch bool      `json:"independentForResearch" gorm:"default:false;index"`
+	RecommendationHash     string    `json:"recommendationHash" gorm:"size:64;index"`
+	ForwardReturn5         float64   `json:"forwardReturn5"`
+	ForwardReturn20        float64   `json:"forwardReturn20"`
+	ValidationStatus       string    `json:"validationStatus" gorm:"size:20;index"`
+	CreatedAt              time.Time `json:"createdAt" gorm:"autoCreateTime"`
+	UpdatedAt              time.Time `json:"updatedAt" gorm:"autoUpdateTime"`
+}
+
+func (ModelRecommendationEvent) TableName() string { return "model_recommendation_event" }
 
 type SystemCronTaskStatus struct {
 	ID            uint       `json:"id"`

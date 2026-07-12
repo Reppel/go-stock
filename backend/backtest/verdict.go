@@ -181,6 +181,24 @@ func ApplyResearchEvidenceToVerdict(result *ValidationResult, ideas []ResearchId
 	result.Verdict = BuildQuantVerdict(result, result.BacktestConfig)
 }
 
+// ApplyCandidateDiagnosticVerdict prevents a decision-date selected universe
+// from using its selection-biased historical metrics for promotion.
+func ApplyCandidateDiagnosticVerdict(result *ValidationResult, config BacktestConfig) {
+	if result == nil {
+		return
+	}
+	result.OverfitDiagnostics.Warnings = append(result.OverfitDiagnostics.Warnings,
+		"candidate universe was selected at the decision date; historical backtest is diagnostic and must be confirmed by forward paper trading")
+	result.Verdict = BuildQuantVerdict(result, config)
+	if result.NoLookaheadPassed && result.TradeCount > 0 && result.DataCoverage >= config.MinDataCoverage {
+		result.Verdict.Status = "paper_trade"
+		result.Verdict.Reasons = append(result.Verdict.Reasons,
+			"historical result is diagnostic only; eligibility is determined exclusively by post-snapshot forward trading")
+		result.Verdict.RequiredActions = append(result.Verdict.RequiredActions,
+			"complete point-in-time forward paper trading before active monitoring")
+	}
+}
+
 func BuildQuantVerdict(result *ValidationResult, config BacktestConfig) QuantVerdict {
 	verdict := QuantVerdict{
 		Version:     CurrentVerdictVersion,

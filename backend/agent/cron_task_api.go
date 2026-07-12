@@ -365,6 +365,8 @@ func (a *CronTaskApi) executeTaskByType(ctx context.Context, task *models.CronTa
 		return a.executePredictionSyncFeatures(ctx, task)
 	case "prediction_sync_money_flow":
 		return a.executePredictionSyncMoneyFlow(ctx, task)
+	case "prediction_sync_candidates":
+		return a.executePredictionSyncCandidates(ctx, task)
 	case "prediction_scan_signals":
 		return a.executePredictionScanSignals(ctx, task)
 	case "prediction_scan_alerts":
@@ -630,6 +632,44 @@ func (a *CronTaskApi) executePredictionSyncMoneyFlow(ctx context.Context, task *
 	}
 	if result.FreshStocks < len(stockCodes) || result.FailedStocks > 0 || result.PartialStocks > 0 {
 		return partialTask(fmt.Sprintf("当日新鲜 %d/%d，失败 %d，历史数据不完整 %d", result.FreshStocks, len(stockCodes), result.FailedStocks, result.PartialStocks))
+	}
+	return nil
+}
+
+func (a *CronTaskApi) executePredictionSyncCandidates(ctx context.Context, task *models.CronTask) error {
+	logger.SugaredLogger.Infof("执行预测工厂五源候选快照任务：%s", task.Name)
+	if !isATradingDay(time.Now()) {
+		return skipTask("当前不是A股交易日")
+	}
+	now := time.Now().In(shanghaiLocation)
+	tradeDate := now.Format("2006-01-02")
+	freshness := backtest.NewFeatureSyncService().GetFeatureFreshness("全部A股")
+	if latestDate, _ := freshness["latestDate"].(string); latestDate != tradeDate {
+		return skipTask(fmt.Sprintf("当日技术特征未就绪，最新数据为 %s", latestDate))
+	}
+	details, err := backtest.NewCandidatePoolService().Generate(backtest.CandidateGenerateRequest{
+		Name:           tradeDate + " 五源自动候选池",
+		Scene:          "短线爆发",
+		StockScope:     "全部A股",
+		TradeDate:      tradeDate,
+		Sources:        []string{"recommendation", "event", "uplimit", "pattern", "indicator"},
+		SourceMode:     "union",
+		MinimumSources: 1,
+		Limit:          200,
+	})
+	if err != nil {
+		return err
+	}
+	if details == nil || details.Snapshot.Status == "failed" {
+		message := "未生成候选快照"
+		if details != nil && strings.TrimSpace(details.Snapshot.ErrorMessage) != "" {
+			message = details.Snapshot.ErrorMessage
+		}
+		return partialTask(message)
+	}
+	logger.SugaredLogger.Infof("五源候选快照完成：快照 %d，候选 %d，覆盖率 %.2f", details.Snapshot.ID, details.Snapshot.CandidateCount, details.Snapshot.Coverage)
+	if details.Snapshot.Coverage < 1 {
+		return partialTask(fmt.Sprintf("快照 %d 已生成 %d 只候选，来源覆盖率 %.0f%%：%s", details.Snapshot.ID, details.Snapshot.CandidateCount, details.Snapshot.Coverage*100, details.Snapshot.ErrorMessage))
 	}
 	return nil
 }

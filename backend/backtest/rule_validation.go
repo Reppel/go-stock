@@ -147,6 +147,19 @@ func GetIndicatorRegistry() []IndicatorDefinition {
 		{IndicatorID: "market.UpRatio", Name: "MarketUpRatio", Label: "market advance ratio", Source: "market", Table: "market_factor_daily", Field: "up_count", Type: "breadth", Unit: "ratio", AllowedOperators: valueOps, AvailableAt: "T_close", LookbackDays: 1},
 		{IndicatorID: "market.AdvanceDecline", Name: "MarketAdvanceDecline", Label: "advance decline spread", Source: "market", Table: "market_factor_daily", Field: "up_count", Type: "breadth", Unit: "count", AllowedOperators: valueOps, AvailableAt: "T_close", LookbackDays: 1},
 		{IndicatorID: "sector.NetInflow", Name: "SectorNetInflow", Label: "sector net inflow", Source: "sector", Table: "sector_flow_daily", Field: "net_inflow", Type: "money_flow", Unit: "amount", AllowedOperators: valueOps, AvailableAt: "T_close", LookbackDays: 1},
+		{IndicatorID: "event.ChangeEventCount", Name: "ChangeEventCount", Label: "change event count", Source: "event", Table: "stock_event_daily", Field: "change_event_count", Type: "event", Unit: "count", AllowedOperators: valueOps, AvailableAt: "T_close", LookbackDays: 1},
+		{IndicatorID: "event.HasLargeBuy", Name: "HasLargeBuy", Label: "large buy event", Source: "event", Table: "stock_event_daily", Field: "has_large_buy", Type: "event", Unit: "boolean", AllowedOperators: valueOps, AvailableAt: "T_close", LookbackDays: 1},
+		{IndicatorID: "event.HasRapidRise", Name: "HasRapidRise", Label: "rapid rise event", Source: "event", Table: "stock_event_daily", Field: "has_rapid_rise", Type: "event", Unit: "boolean", AllowedOperators: valueOps, AvailableAt: "T_close", LookbackDays: 1},
+		{IndicatorID: "event.HasLimitUp", Name: "HasLimitUp", Label: "limit up event", Source: "event", Table: "stock_event_daily", Field: "has_limit_up", Type: "event", Unit: "boolean", AllowedOperators: valueOps, AvailableAt: "T_close", LookbackDays: 1},
+		{IndicatorID: "limitup.KeepTimes", Name: "LimitUpKeepTimes", Label: "limit-up ladder height", Source: "limitup", Table: "uplimit_stock_daily", Field: "keep_times", Type: "sentiment", Unit: "count", AllowedOperators: valueOps, AvailableAt: "T_close", LookbackDays: 1},
+		{IndicatorID: "limitup.SealRatioClose", Name: "SealRatioClose", Label: "closing seal ratio", Source: "limitup", Table: "uplimit_stock_daily", Field: "seal_ratio_close", Type: "liquidity", Unit: "ratio", AllowedOperators: valueOps, AvailableAt: "T_close", LookbackDays: 1},
+		{IndicatorID: "limitup.ExplodedCount", Name: "ExplodedCount", Label: "failed limit-up count", Source: "limitup", Table: "uplimit_stock_daily", Field: "explode_count", Type: "risk", Unit: "count", AllowedOperators: valueOps, AvailableAt: "T_close", LookbackDays: 1},
+		{IndicatorID: "limitup.PlateHeat", Name: "PlateHeat", Label: "limit-up plate heat", Source: "limitup", Table: "uplimit_stock_daily", Field: "plate_heat", Type: "sentiment", Unit: "score", AllowedOperators: valueOps, AvailableAt: "T_close", LookbackDays: 1},
+		{IndicatorID: "screening.PatternCount", Name: "PatternCount", Label: "local pattern count", Source: "screening", Table: "stock_screening_fact_daily", Field: "pattern_count", Type: "pattern", Unit: "count", AllowedOperators: valueOps, AvailableAt: "T_close", LookbackDays: 1},
+		{IndicatorID: "screening.MACDGoldenCross", Name: "ScreeningMACDGoldenCross", Label: "local MACD golden cross", Source: "screening", Table: "stock_screening_fact_daily", Field: "macd_golden_cross", Type: "pattern", Unit: "boolean", AllowedOperators: valueOps, AvailableAt: "T_close", LookbackDays: 2},
+		{IndicatorID: "screening.MABullish", Name: "ScreeningMABullish", Label: "local bullish MA", Source: "screening", Table: "stock_screening_fact_daily", Field: "ma_bullish", Type: "pattern", Unit: "boolean", AllowedOperators: valueOps, AvailableAt: "T_close", LookbackDays: 60},
+		{IndicatorID: "recommendation.ModelCount", Name: "RecommendationModelCount", Label: "independent recommendation model count", Source: "recommendation", Table: "model_recommendation_event", Field: "model_name", Type: "model_consensus", Unit: "count", AllowedOperators: valueOps, AvailableAt: "event_time", LookbackDays: 30},
+		{IndicatorID: "recommendation.RecommendationCount", Name: "RecommendationCount", Label: "recommendation count", Source: "recommendation", Table: "model_recommendation_event", Field: "id", Type: "model_consensus", Unit: "count", AllowedOperators: valueOps, AvailableAt: "event_time", LookbackDays: 30},
 	}
 	for i := range defs {
 		defs[i].DataType = "float"
@@ -192,7 +205,11 @@ func hydrateIndicatorRegistryMetadata(defs []IndicatorDefinition) {
 			if def.Table == "stock_feature" {
 				query = query.Where("feature_version = ? AND adjusted = ?", CurrentFeatureVersion, true)
 			}
-			selectSQL := fmt.Sprintf("COALESCE(MIN(%s), ''), COALESCE(AVG(CASE WHEN %s IS NOT NULL AND %s != 0 THEN 1.0 ELSE 0.0 END), 0)", dateField, def.Field, def.Field)
+			coverageSQL := fmt.Sprintf("COALESCE(AVG(CASE WHEN %s IS NOT NULL THEN 1.0 ELSE 0.0 END), 0)", def.Field)
+			if def.Table == "stock_screening_fact_daily" {
+				coverageSQL = "COALESCE(AVG(CASE WHEN calculated = 1 THEN coverage ELSE 0.0 END), 0)"
+			}
+			selectSQL := fmt.Sprintf("COALESCE(MIN(%s), ''), %s", dateField, coverageSQL)
 			if err := query.Select(selectSQL).Row().Scan(&startDate, &coverage); err == nil {
 				values[def.IndicatorID] = indicatorRegistryMetadata{Coverage: coverage, StartDate: startDate}
 			}

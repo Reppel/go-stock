@@ -115,3 +115,39 @@ func TestPaperTradeRequiresTradingDaysTradesAndPositiveNAV(t *testing.T) {
 		t.Fatal("negative paper-trade outcome must not promote to active")
 	}
 }
+
+func TestCandidateSnapshotPromotionUsesForwardEvidenceOnly(t *testing.T) {
+	now := time.Now()
+	hypothesis := models.PredictionHypothesis{
+		BacktestDiagnosticOnly: true,
+		PaperTradeDays:         DefaultBacktestConfig().PaperTradeDays,
+		PaperTradeCount:        MinPaperTradeValidations,
+		PaperNav:               1.03,
+		PaperMaxDrawdown:       0.10,
+		// Deliberately leave historical OOS and benchmark evidence unavailable:
+		// a point-in-time candidate universe must not use those polluted metrics.
+	}
+	if ready, reason := paperTradeReady(hypothesis, now); !ready {
+		t.Fatalf("candidate snapshot should qualify from forward evidence only: %s", reason)
+	}
+	hypothesis.PaperNav = 0.99
+	if ready, _ := paperTradeReady(hypothesis, now); ready {
+		t.Fatal("candidate snapshot must never promote with negative forward NAV")
+	}
+}
+
+func TestCandidateSnapshotSessionValidationCannotBeBypassed(t *testing.T) {
+	snapshot := models.CandidateSnapshot{
+		TradeDate: "2026-07-10", AvailableAt: time.Now(), Status: "candidate",
+	}
+	if err := validateCandidateSnapshotForSession(snapshot, "2026-07-11"); err == nil {
+		t.Fatal("candidate snapshot must not validate history after its selection date")
+	}
+	if err := validateCandidateSnapshotForSession(snapshot, "2026-07-10"); err != nil {
+		t.Fatalf("same-day diagnostic history should be allowed: %v", err)
+	}
+	snapshot.Status = "expired"
+	if err := validateCandidateSnapshotForSession(snapshot, "2026-07-10"); err == nil {
+		t.Fatal("expired candidate snapshot must not create a session")
+	}
+}

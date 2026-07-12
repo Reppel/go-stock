@@ -2,6 +2,7 @@ package db
 
 import (
 	"go-stock/backend/models"
+	"log"
 	"time"
 )
 
@@ -60,22 +61,34 @@ func ClearChatMemory(sessionID string) error {
 }
 
 func AutoMigrate() {
-	Dao.AutoMigrate(&ChatMemory{})
-	Dao.AutoMigrate(&models.StockChangeHistory{})
-	Dao.AutoMigrate(&models.MarketStatistic{})
-	Dao.AutoMigrate(&models.PredictionSession{})
-	Dao.AutoMigrate(&models.PredictionHypothesis{})
-	Dao.AutoMigrate(&models.PredictionSignal{})
-	Dao.AutoMigrate(&models.PredictionHypothesisDaily{})
-	Dao.AutoMigrate(&models.StockFeature{})
-	Dao.AutoMigrate(&models.FeatureSyncJob{})
-	Dao.AutoMigrate(&models.PredictionTrade{})
-	Dao.AutoMigrate(&models.TradeDecisionLog{})
-	Dao.AutoMigrate(&models.PredictionGenerationAudit{})
-	Dao.AutoMigrate(&models.PredictionResearchIdea{})
-	Dao.AutoMigrate(&models.MarketFactorDaily{})
-	Dao.AutoMigrate(&models.StockMoneyFlowDaily{})
-	Dao.AutoMigrate(&models.SectorFlowDaily{})
-	Dao.AutoMigrate(&models.StockEventDaily{})
-	Dao.AutoMigrate(&models.StockRiskEvent{})
+	migrateStockEventDailyV2()
+	if err := Dao.AutoMigrate(
+		&ChatMemory{}, &models.StockChangeHistory{}, &models.MarketStatistic{},
+		&models.PredictionSession{}, &models.PredictionHypothesis{}, &models.PredictionSignal{},
+		&models.PredictionHypothesisDaily{}, &models.StockFeature{}, &models.FeatureSyncJob{},
+		&models.PredictionTrade{}, &models.TradeDecisionLog{}, &models.PredictionGenerationAudit{},
+		&models.PredictionResearchIdea{}, &models.MarketFactorDaily{}, &models.StockMoneyFlowDaily{},
+		&models.SectorFlowDaily{}, &models.StockEventDaily{}, &models.StockRiskEvent{},
+		&models.CandidateSnapshot{}, &models.CandidateSnapshotItem{}, &models.CandidateSourceFact{},
+		&models.StockScreeningFactDaily{}, &models.UplimitStockDaily{}, &models.ModelRecommendationEvent{},
+		&models.ScreeningExecutionSnapshot{}, &models.ScreeningExecutionItem{},
+	); err != nil {
+		log.Printf("prediction schema migration failed: %v", err)
+	}
+}
+
+// migrateStockEventDailyV2 prepares legacy installations before the v2 unique
+// point-in-time key is created. Without this step duplicate legacy rows can
+// make SQLite reject the new unique index during AutoMigrate.
+func migrateStockEventDailyV2() {
+	if Dao == nil || !Dao.Migrator().HasTable(&models.StockEventDaily{}) {
+		return
+	}
+	if !Dao.Migrator().HasColumn(&models.StockEventDaily{}, "feature_version") {
+		_ = Dao.Migrator().AddColumn(&models.StockEventDaily{}, "FeatureVersion")
+	}
+	_ = Dao.Exec("UPDATE stock_event_daily SET feature_version = ? WHERE feature_version IS NULL OR TRIM(feature_version) = ''", "daily_v2_qfq").Error
+	_ = Dao.Exec(`DELETE FROM stock_event_daily WHERE id NOT IN (
+		SELECT MAX(id) FROM stock_event_daily GROUP BY stock_code, trade_date, feature_version
+	)`).Error
 }

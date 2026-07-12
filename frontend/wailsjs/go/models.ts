@@ -1,5 +1,76 @@
 export namespace backtest {
-	
+
+	export class CandidateSourceInput {
+	    stockCode: string;
+	    stockName: string;
+	    rank: number;
+	    rawJson: string;
+
+	    static createFrom(source: any = {}) {
+	        return new CandidateSourceInput(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.stockCode = source["stockCode"];
+	        this.stockName = source["stockName"];
+	        this.rank = source["rank"];
+	        this.rawJson = source["rawJson"];
+	    }
+	}
+	export class CandidateGenerateRequest {
+	    name: string;
+	    scene: string;
+	    stockScope: string;
+	    stockCodes: string[];
+	    sourceItems: CandidateSourceInput[];
+	    tradeDate: string;
+	    sources: string[];
+	    sourceMode: string;
+	    minimumSources: number;
+	    limit: number;
+	    indicatorQuery: string;
+	    minAmount: number;
+
+	    static createFrom(source: any = {}) {
+	        return new CandidateGenerateRequest(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.scene = source["scene"];
+	        this.stockScope = source["stockScope"];
+	        this.stockCodes = source["stockCodes"];
+	        this.sourceItems = this.convertValues(source["sourceItems"], CandidateSourceInput);
+	        this.tradeDate = source["tradeDate"];
+	        this.sources = source["sources"];
+	        this.sourceMode = source["sourceMode"];
+	        this.minimumSources = source["minimumSources"];
+	        this.limit = source["limit"];
+	        this.indicatorQuery = source["indicatorQuery"];
+	        this.minAmount = source["minAmount"];
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
 	export class IndicatorDefinition {
 	    indicatorId: string;
 	    name: string;
@@ -2384,6 +2455,86 @@ export namespace models {
 	        this.netInflow = source["netInflow"];
 	    }
 	}
+	export class CandidateSnapshot {
+	    id: number;
+	    snapshotKey: string;
+	    name: string;
+	    scene: string;
+	    stockScope: string;
+	    sourcesJson: string;
+	    sourceMode: string;
+	    minimumSources: number;
+	    queryJson: string;
+	    tradeDate: string;
+	    // Go type: time
+	    availableAt: any;
+	    // Go type: time
+	    dataAsOf: any;
+	    sourceVersion: string;
+	    schemaVersion: string;
+	    featureVersion: string;
+	    registryVersion: string;
+	    rawHash: string;
+	    ablationJson: string;
+	    coverage: number;
+	    candidateCount: number;
+	    status: string;
+	    errorMessage: string;
+	    // Go type: time
+	    createdAt: any;
+	    // Go type: time
+	    updatedAt: any;
+
+	    static createFrom(source: any = {}) {
+	        return new CandidateSnapshot(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.snapshotKey = source["snapshotKey"];
+	        this.name = source["name"];
+	        this.scene = source["scene"];
+	        this.stockScope = source["stockScope"];
+	        this.sourcesJson = source["sourcesJson"];
+	        this.sourceMode = source["sourceMode"];
+	        this.minimumSources = source["minimumSources"];
+	        this.queryJson = source["queryJson"];
+	        this.tradeDate = source["tradeDate"];
+	        this.availableAt = this.convertValues(source["availableAt"], null);
+	        this.dataAsOf = this.convertValues(source["dataAsOf"], null);
+	        this.sourceVersion = source["sourceVersion"];
+	        this.schemaVersion = source["schemaVersion"];
+	        this.featureVersion = source["featureVersion"];
+	        this.registryVersion = source["registryVersion"];
+	        this.rawHash = source["rawHash"];
+	        this.ablationJson = source["ablationJson"];
+	        this.coverage = source["coverage"];
+	        this.candidateCount = source["candidateCount"];
+	        this.status = source["status"];
+	        this.errorMessage = source["errorMessage"];
+	        this.createdAt = this.convertValues(source["createdAt"], null);
+	        this.updatedAt = this.convertValues(source["updatedAt"], null);
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class ConceptFundFlow {
 	    id: number;
 	    code: string;
@@ -3145,6 +3296,8 @@ export namespace models {
 	export class PredictionHypothesis {
 	    id: number;
 	    sessionId: number;
+	    universeSelectionMode: string;
+	    backtestDiagnosticOnly: boolean;
 	    name: string;
 	    description: string;
 	    scene: string;
@@ -3205,6 +3358,8 @@ export namespace models {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
 	        this.sessionId = source["sessionId"];
+	        this.universeSelectionMode = source["universeSelectionMode"];
+	        this.backtestDiagnosticOnly = source["backtestDiagnosticOnly"];
 	        this.name = source["name"];
 	        this.description = source["description"];
 	        this.scene = source["scene"];
@@ -3297,6 +3452,10 @@ export namespace models {
 	}
 	export class PredictionSession {
 	    id: number;
+	    candidateSnapshotId: number;
+	    universeSelectionMode: string;
+	    // Go type: time
+	    selectionAsOf: any;
 	    scene: string;
 	    stockScope: string;
 	    universeJson: string;
@@ -3318,6 +3477,9 @@ export namespace models {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
+	        this.candidateSnapshotId = source["candidateSnapshotId"];
+	        this.universeSelectionMode = source["universeSelectionMode"];
+	        this.selectionAsOf = this.convertValues(source["selectionAsOf"], null);
 	        this.scene = source["scene"];
 	        this.stockScope = source["stockScope"];
 	        this.universeJson = source["universeJson"];
@@ -4179,4 +4341,3 @@ export namespace models {
 	}
 
 }
-

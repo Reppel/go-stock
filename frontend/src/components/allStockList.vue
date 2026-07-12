@@ -12,6 +12,7 @@ import KLineChart from "./KLineChart.vue";
 import StockLightweightKlineChart from "./StockLightweightKlineChart.vue";
 import {FolderOpenOutline, AddOutline} from "@vicons/ionicons5";
 import {format} from "date-fns";
+import {EventsEmit} from "../../wailsjs/runtime";
 
 const notify = useNotification()
 const message = useMessage()
@@ -55,6 +56,16 @@ onMounted(() => {
 
 const dataRef = ref([])
 const loadingRef = ref(false)
+
+function sendPatternsToPredictionFactory() {
+  const stockCodes = [...new Set(dataRef.value.map(row => row.SECUCODE).filter(Boolean))]
+  const sourceItems = dataRef.value.map((row, index) => ({
+    stockCode: row.SECUCODE, stockName: row.SECURITY_NAME_ABBR, rank: index + 1, rawJson: JSON.stringify(row)
+  }))
+  EventsEmit('changeResearchTab', {ID: 10, name: 'AI预测工厂', candidateRequest: {
+    source: 'pattern', stockCodes, sourceItems, scene: '波段反弹', indicatorQuery: JSON.stringify(technicalIndicatorReactive)
+  }})
+}
 const vipLevel=ref("");
 const vipStartTime=ref("");
 const vipEndTime=ref("");
@@ -758,6 +769,7 @@ const toNumber = (value, defaultValue = 0) => {
       搜索
     </n-button>
       <n-button @click="handleReset">重置</n-button>
+      <n-button type="primary" :disabled="!dataRef.length" @click="sendPatternsToPredictionFactory">送入 AI 量化筛选</n-button>
 
     </n-input-group>
     <!-- 数据表格 -->

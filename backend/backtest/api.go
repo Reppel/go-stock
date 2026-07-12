@@ -70,6 +70,14 @@ func ensurePredictionTables() error {
 		&models.SectorFlowDaily{},
 		&models.StockEventDaily{},
 		&models.StockRiskEvent{},
+		&models.CandidateSnapshot{},
+		&models.CandidateSnapshotItem{},
+		&models.CandidateSourceFact{},
+		&models.StockScreeningFactDaily{},
+		&models.UplimitStockDaily{},
+		&models.ModelRecommendationEvent{},
+		&models.ScreeningExecutionSnapshot{},
+		&models.ScreeningExecutionItem{},
 	); err != nil {
 		return err
 	}
@@ -115,11 +123,25 @@ func (s *PredictionService) CreateSession(
 	}
 
 	session := &models.PredictionSession{
-		Scene:      scene,
-		StockScope: stockScope,
-		StartDate:  startDate,
-		EndDate:    endDate,
-		Status:     "running",
+		Scene:               scene,
+		StockScope:          stockScope,
+		CandidateSnapshotID: candidateSnapshotIDFromScope(stockScope),
+		StartDate:           startDate,
+		EndDate:             endDate,
+		Status:              "running",
+	}
+	if session.CandidateSnapshotID > 0 {
+		session.UniverseSelectionMode = "point_in_time_candidate"
+		var candidateSnapshot models.CandidateSnapshot
+		if err := db.Dao.First(&candidateSnapshot, session.CandidateSnapshotID).Error; err != nil {
+			return nil, nil, fmt.Errorf("候选快照不存在")
+		}
+		if err := validateCandidateSnapshotForSession(candidateSnapshot, endDate); err != nil {
+			return nil, nil, err
+		}
+		session.SelectionAsOf = candidateSnapshot.AvailableAt
+	} else {
+		session.UniverseSelectionMode = "research_universe"
 	}
 
 	if err := db.Dao.Create(session).Error; err != nil {
@@ -261,45 +283,50 @@ func (s *PredictionService) CreateSession(
 			continue
 		}
 		ApplyResearchEvidenceToVerdict(result, researchIdeas)
+		if session.CandidateSnapshotID > 0 {
+			ApplyCandidateDiagnosticVerdict(result, config)
+		}
 
 		backtestConfigJSON, _ := json.Marshal(backtestPayload(config, result))
 		verdictJSON, _ := json.Marshal(result.Verdict)
 		ph := models.PredictionHypothesis{
-			SessionID:             session.ID,
-			Name:                  h.Name,
-			Description:           h.Description,
-			Scene:                 h.Scene,
-			RuleJSON:              ruleJSON,
-			Params:                h.Params,
-			TimeHorizon:           h.TimeHorizon,
-			TargetReturn:          h.TargetReturn,
-			WinRate:               result.WinRate,
-			AvgReturn:             result.AvgReturn,
-			MaxDrawdown:           result.MaxDrawdown,
-			TradeCount:            result.TradeCount,
-			TotalReturn:           result.TotalReturn,
-			MedianReturn:          result.MedianReturn,
-			ProfitLossRatio:       result.ProfitLossRatio,
-			ProfitLossRatioStatus: result.ProfitLossRatioStatus,
-			OutSampleAvgReturn:    result.OutSampleAvgReturn,
-			OutSampleMaxDrawdown:  result.OutSampleMaxDrawdown,
-			OutSampleTradeCount:   result.OutSampleTradeCount,
-			BenchmarkAvailable:    result.BenchmarkAvailable,
-			BenchmarkReturn:       result.BenchmarkReturn,
-			ExcessReturn:          result.ExcessReturn,
-			DataCoverage:          result.DataCoverage,
-			NoLookaheadPassed:     result.NoLookaheadPassed,
-			BacktestConfigJSON:    string(backtestConfigJSON),
-			VerdictJSON:           string(verdictJSON),
-			GenerationSource:      source,
-			SchemaVersion:         CurrentPredictionRuleSchema,
-			RegistryVersion:       CurrentIndicatorRegistry,
-			EngineVersion:         CurrentEngineVersion,
-			StrategyVersion:       CurrentStrategyVersion,
-			FeatureVersion:        config.FeatureVersion,
-			LastVerdictStatus:     result.Verdict.Status,
-			ReviewDueAt:           reviewDueAtForVerdict(result.Verdict, config),
-			Status:                "draft",
+			SessionID:              session.ID,
+			UniverseSelectionMode:  session.UniverseSelectionMode,
+			BacktestDiagnosticOnly: session.CandidateSnapshotID > 0,
+			Name:                   h.Name,
+			Description:            h.Description,
+			Scene:                  h.Scene,
+			RuleJSON:               ruleJSON,
+			Params:                 h.Params,
+			TimeHorizon:            h.TimeHorizon,
+			TargetReturn:           h.TargetReturn,
+			WinRate:                result.WinRate,
+			AvgReturn:              result.AvgReturn,
+			MaxDrawdown:            result.MaxDrawdown,
+			TradeCount:             result.TradeCount,
+			TotalReturn:            result.TotalReturn,
+			MedianReturn:           result.MedianReturn,
+			ProfitLossRatio:        result.ProfitLossRatio,
+			ProfitLossRatioStatus:  result.ProfitLossRatioStatus,
+			OutSampleAvgReturn:     result.OutSampleAvgReturn,
+			OutSampleMaxDrawdown:   result.OutSampleMaxDrawdown,
+			OutSampleTradeCount:    result.OutSampleTradeCount,
+			BenchmarkAvailable:     result.BenchmarkAvailable,
+			BenchmarkReturn:        result.BenchmarkReturn,
+			ExcessReturn:           result.ExcessReturn,
+			DataCoverage:           result.DataCoverage,
+			NoLookaheadPassed:      result.NoLookaheadPassed,
+			BacktestConfigJSON:     string(backtestConfigJSON),
+			VerdictJSON:            string(verdictJSON),
+			GenerationSource:       source,
+			SchemaVersion:          CurrentPredictionRuleSchema,
+			RegistryVersion:        CurrentIndicatorRegistry,
+			EngineVersion:          CurrentEngineVersion,
+			StrategyVersion:        CurrentStrategyVersion,
+			FeatureVersion:         config.FeatureVersion,
+			LastVerdictStatus:      result.Verdict.Status,
+			ReviewDueAt:            reviewDueAtForVerdict(result.Verdict, config),
+			Status:                 "draft",
 		}
 
 		if err := db.Dao.Create(&ph).Error; err != nil {
@@ -362,6 +389,19 @@ func (s *PredictionService) CreateSession(
 	}
 
 	return session, resultHypotheses, nil
+}
+
+func validateCandidateSnapshotForSession(snapshot models.CandidateSnapshot, endDate string) error {
+	if snapshot.AvailableAt.IsZero() {
+		return fmt.Errorf("候选快照缺少选择时点，不能用于验证")
+	}
+	if snapshot.Status != "candidate" && snapshot.Status != "validated" {
+		return fmt.Errorf("候选快照状态为 %s，不能用于验证", snapshot.Status)
+	}
+	if strings.TrimSpace(snapshot.TradeDate) == "" || endDate > snapshot.TradeDate {
+		return fmt.Errorf("历史诊断区间结束日不能晚于候选快照数据日 %s", snapshot.TradeDate)
+	}
+	return nil
 }
 
 func backtestPayload(config BacktestConfig, result *ValidationResult) map[string]any {
@@ -511,22 +551,22 @@ func (s *PredictionService) SaveHypothesis(hypothesisID uint) error {
 	if !hypothesis.NoLookaheadPassed {
 		return fmt.Errorf("策略未通过未来函数检查，不能保存监控")
 	}
-	if hypothesis.TradeCount < MinPoolStrategySamples {
+	if !hypothesis.BacktestDiagnosticOnly && hypothesis.TradeCount < MinPoolStrategySamples {
 		return fmt.Errorf("样本不足，仅供观察，不建议保存监控")
 	}
-	if hypothesis.MaxDrawdown > 0.20 {
+	if !hypothesis.BacktestDiagnosticOnly && hypothesis.MaxDrawdown > 0.20 {
 		return fmt.Errorf("最大回撤超过 20%%，不能保存监控")
 	}
-	if hypothesis.AvgReturn <= 0 {
+	if !hypothesis.BacktestDiagnosticOnly && hypothesis.AvgReturn <= 0 {
 		return fmt.Errorf("平均收益未通过最低要求，不能保存监控")
 	}
 	if hypothesis.DataCoverage < DefaultBacktestConfig().MinDataCoverage {
 		return fmt.Errorf("特征覆盖率不足，不能保存监控")
 	}
-	if !hypothesis.BenchmarkAvailable {
+	if !hypothesis.BacktestDiagnosticOnly && !hypothesis.BenchmarkAvailable {
 		return fmt.Errorf("基准数据缺失，无法确认超额收益，不能启用正式监控")
 	}
-	if hypothesis.ExcessReturn <= 0 {
+	if !hypothesis.BacktestDiagnosticOnly && hypothesis.ExcessReturn <= 0 {
 		return fmt.Errorf("策略未取得正超额收益，不能进入正式模拟盘")
 	}
 

@@ -11,6 +11,16 @@ const message = useMessage()
 const search = ref('')
 const columns = ref([])
 const dataList = ref([])
+
+function sendIndicatorsToPredictionFactory() {
+  const stockCodes = [...new Set(dataList.value.map(row => row.SECURITY_CODE).filter(Boolean))]
+  const sourceItems = dataList.value.map((row, index) => ({
+    stockCode: row.SECURITY_CODE, stockName: row.SECURITY_NAME_ABBR, rank: index + 1, rawJson: JSON.stringify(row)
+  }))
+  EventsEmit('changeResearchTab', {ID: 10, name: 'AI预测工厂', candidateRequest: {
+    source: 'indicator', stockCodes, sourceItems, scene: '趋势持有', indicatorQuery: search.value
+  }})
+}
 const hotStrategy = ref([])
 const customStrategies = ref([])
 const traceInfo = ref('')
@@ -478,6 +488,7 @@ function openCenteredWindow(url, width, height) {
             <template #icon><n-icon :component="BookmarkOutline" size="16"/></template>
             保存策略
           </n-button>
+          <n-button type="primary" secondary :disabled="!dataList.length" @click="sendIndicatorsToPredictionFactory">送入 AI 量化筛选</n-button>
         </n-input-group>
       </div>
       <div v-if="traceInfo" style="margin: 5px 0; --wails-draggable:no-drag">

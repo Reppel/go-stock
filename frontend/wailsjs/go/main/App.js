@@ -106,6 +106,10 @@ export function CreatePredictionSession(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['CreatePredictionSession'](arg1, arg2, arg3, arg4, arg5);
 }
 
+export function CreatePredictionSessionFromCandidate(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['CreatePredictionSessionFromCandidate'](arg1, arg2, arg3, arg4, arg5);
+}
+
 export function CreateSkill(arg1) {
   return window['go']['main']['App']['CreateSkill'](arg1);
 }
@@ -124,6 +128,10 @@ export function DeleteAiRecommendStocks(arg1) {
 
 export function DeleteAllStockInfo(arg1) {
   return window['go']['main']['App']['DeleteAllStockInfo'](arg1);
+}
+
+export function DeleteCandidateSnapshot(arg1) {
+  return window['go']['main']['App']['DeleteCandidateSnapshot'](arg1);
 }
 
 export function DeleteCronTask(arg1) {
@@ -200,6 +208,10 @@ export function Follow(arg1) {
 
 export function FollowFund(arg1) {
   return window['go']['main']['App']['FollowFund'](arg1);
+}
+
+export function GenerateCandidateSnapshot(arg1) {
+  return window['go']['main']['App']['GenerateCandidateSnapshot'](arg1);
 }
 
 export function GetAIResponseResult(arg1) {
@@ -288,6 +300,14 @@ export function GetBKFundFlowTopList(arg1) {
 
 export function GetBKFundFlowTopListByDate(arg1, arg2) {
   return window['go']['main']['App']['GetBKFundFlowTopListByDate'](arg1, arg2);
+}
+
+export function GetCandidateSnapshot(arg1, arg2) {
+  return window['go']['main']['App']['GetCandidateSnapshot'](arg1, arg2);
+}
+
+export function GetCandidateSnapshots(arg1, arg2) {
+  return window['go']['main']['App']['GetCandidateSnapshots'](arg1, arg2);
 }
 
 export function GetChangeRank(arg1, arg2) {

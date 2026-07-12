@@ -459,11 +459,13 @@ func paperAccountReady(h models.PredictionHypothesis, account models.PredictionP
 	if account.MaxDrawdown > 0.20 {
 		reasons = append(reasons, "前向最大回撤超过20%")
 	}
-	if h.OutSampleTradeCount < 15 || h.OutSampleAvgReturn <= 0 {
-		reasons = append(reasons, "样本外交易或收益未达标")
-	}
-	if !h.BenchmarkAvailable || h.ExcessReturn <= 0 {
-		reasons = append(reasons, "基准或超额收益未达标")
+	if !h.BacktestDiagnosticOnly {
+		if h.OutSampleTradeCount < 15 || h.OutSampleAvgReturn <= 0 {
+			reasons = append(reasons, "样本外交易或收益未达标")
+		}
+		if !h.BenchmarkAvailable || h.ExcessReturn <= 0 {
+			reasons = append(reasons, "基准或超额收益未达标")
+		}
 	}
 	if len(reasons) > 0 {
 		return false, strings.Join(reasons, "；")

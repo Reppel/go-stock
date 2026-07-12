@@ -2,6 +2,7 @@
 import {computed, h, onBeforeMount, onBeforeUnmount, onMounted, onUnmounted, ref, reactive} from 'vue'
 import {GetStockChanges, GetConfig, GetStockChangeHistory, SaveStockChangesToHistory, GetAllStockChangesWithPaging} from "../../wailsjs/go/main/App";
 import {NButton, NTag, NText, useMessage, useNotification} from "naive-ui";
+import {EventsEmit} from "../../wailsjs/runtime";
 
 const notify = useNotification()
 const message = useMessage()
@@ -11,6 +12,15 @@ const autoRefresh = ref(true)
 const refreshInterval = ref(null)
 const refreshSeconds = ref(10)
 const countdown = ref(10)
+
+async function sendChangesToPredictionFactory() {
+  if (viewMode.value === 'realtime') {
+    await saveCurrentData()
+  }
+  const stockCodes = [...new Set(dataRef.value.map(row => row.stockCode || row.StockCode || row.code).filter(Boolean))]
+  const latestDate = dataRef.value.map(row => row.changeDate || row.ChangeDate).filter(Boolean).sort().pop()
+  EventsEmit('changeResearchTab', {ID: 10, name: 'AI预测工厂', candidateRequest: {source: 'event', stockCodes, scene: '短线爆发', tradeDate: latestDate}})
+}
 
 const viewMode = ref('realtime')
 const isTrading = ref(false)
@@ -571,6 +581,7 @@ onBeforeUnmount(() => {
             <n-button v-if="viewMode === 'realtime'" @click="saveCurrentData" size="small">
               保存到历史
             </n-button>
+            <n-button type="primary" secondary size="small" :disabled="!dataRef.length" @click="sendChangesToPredictionFactory">送入 AI 量化筛选</n-button>
           </n-space>
         </n-space>
 

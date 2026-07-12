@@ -63,6 +63,9 @@ func (s *PredictionService) RecalculateSession(sessionID uint) (*models.Predicti
 		if result.TradeCount == 0 {
 			return nil, nil, fmt.Errorf("策略 %s 重新回测后没有有效交易", hypothesis.Name)
 		}
+		if hypothesis.BacktestDiagnosticOnly || session.CandidateSnapshotID > 0 {
+			ApplyCandidateDiagnosticVerdict(result, config)
+		}
 
 		payload, _ := json.Marshal(backtestPayload(config, result))
 		hypothesis.WinRate = result.WinRate

@@ -3,6 +3,7 @@ import {onBeforeMount, onBeforeUnmount, ref, computed, h} from 'vue'
 import {GetConfig, GetUplimitHot, IsTradingTime, IsTradingDay, GetLatestTradingDay} from "../../wailsjs/go/main/App";
 import {NButton, NText, NTag, NTooltip, NProgress, useMessage} from "naive-ui";
 import StockLightweightKlineChart from "./StockLightweightKlineChart.vue";
+import {EventsEmit} from "../../wailsjs/runtime";
 
 const message = useMessage()
 const loading = ref(false)
@@ -15,6 +16,11 @@ const klineName = ref('')
 const activeView = ref('ladder')
 const expandedLadders = ref([])
 const darkTheme = ref(false)
+
+function sendUplimitToPredictionFactory() {
+  const stockCodes = Object.keys(stockDetailMap.value || {})
+  EventsEmit('changeResearchTab', {ID: 10, name: 'AI预测工厂', candidateRequest: {source: 'uplimit', stockCodes, scene: '短线爆发', tradeDate: selectedDate.value}})
+}
 
 function getCalendarTodayStr() {
   const t = new Date()
@@ -404,6 +410,7 @@ function showKline(code, name) {
               <n-tag v-if="rawData?.today" type="info" size="small" round>实时数据</n-tag>
             </n-space>
             <n-space>
+              <n-button type="primary" secondary size="small" :disabled="!totalZtCount" @click="sendUplimitToPredictionFactory">送入 AI 量化筛选</n-button>
               <n-button :type="activeView==='ladder'?'primary':'default'" size="small" @click="activeView='ladder'">涨停高度</n-button>
               <n-button :type="activeView==='plate'?'primary':'default'" size="small" @click="activeView='plate'">板块热度</n-button>
               <n-button :type="activeView==='hot'?'primary':'default'" size="small" @click="activeView='hot'">个股热度</n-button>

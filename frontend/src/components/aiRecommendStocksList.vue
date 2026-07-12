@@ -12,6 +12,7 @@ import {NAvatar, NButton, NEllipsis, NSwitch, NTag, NText, useMessage, useNotifi
 import StockLightweightKlineChart from "./StockLightweightKlineChart.vue";
 import sparkLine from "./stockSparkLine.vue"
 import {format} from "date-fns";
+import {EventsEmit} from "../../wailsjs/runtime";
 
 const notify = useNotification()
 const vipLevel=ref("");
@@ -78,6 +79,11 @@ const editorDataRef = reactive({
 })
 const dataRef = ref([])
 const loadingRef = ref(true)
+
+function sendRecommendationsToPredictionFactory() {
+  const stockCodes = [...new Set(dataRef.value.map(row => row.stockCode).filter(Boolean))]
+  EventsEmit('changeResearchTab', {ID: 10, name: 'AI预测工厂', candidateRequest: {source: 'recommendation', stockCodes, scene: '短线爆发'}})
+}
 
 // StockClosePrice          string     `json:"StockClosePrice" md:"推荐时股票收盘价格"`
 // StockPrePrice            string     `json:"stockPrePricePrice" md:"前一交易日股票价格"`
@@ -488,6 +494,7 @@ function toggleAlert(row, newEnableAlert) {
     <n-button type="primary" ghost @click="handleSearch"  @input="handleSearch">
       搜索
     </n-button>
+    <n-button type="primary" :disabled="!dataRef.length" @click="sendRecommendationsToPredictionFactory">送入 AI 量化筛选</n-button>
   </n-input-group>
         <n-data-table
             remote

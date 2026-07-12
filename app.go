@@ -35,6 +35,7 @@ import (
 	"github.com/duke-git/lancet/v2/strutil"
 	"github.com/robfig/cron/v3"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"gorm.io/gorm"
 )
 
 // App struct
@@ -936,18 +937,40 @@ func syncAllStockInfo(ctx context.Context) {
 	defer func() {
 		go runtime.EventsEmit(ctx, "loadingMsg", "done")
 	}()
-	db.Dao.Unscoped().Model(&models.AllStockInfo{}).Where("1=1").Delete(&models.AllStockInfo{})
+	// Fetch and validate the complete replacement before touching the current
+	// universe. A remote outage must never turn the prediction stock pool empty.
+	all := make([]models.AllStockInfo, 0, 6000)
+	seen := make(map[string]bool, 6000)
 	for page := 1; page < 3; page++ {
 		res := data.NewStockDataApi().GetAllStocks(page, 3000, "", models.TechnicalIndicators{})
-		var datas []models.AllStockInfo
-		for _, data := range (*res).Result.Data {
-			datas = append(datas, data.ToAllStockInfo())
+		if res == nil || !res.Success || len(res.Result.Data) == 0 {
+			logger.SugaredLogger.Errorf("syncAllStockInfo page %d failed; keep existing universe", page)
+			return
 		}
-		err := db.Dao.CreateInBatches(&datas, 1000).Error
-		if err != nil {
-			logger.SugaredLogger.Errorf("db.Dao.CreateInBatches error:%s", err.Error())
+		for _, row := range res.Result.Data {
+			stock := row.ToAllStockInfo()
+			key := strings.ToUpper(strings.TrimSpace(stock.SECUCODE))
+			if key == "" || seen[key] {
+				continue
+			}
+			seen[key] = true
+			all = append(all, stock)
 		}
 	}
+	if len(all) < 1000 {
+		logger.SugaredLogger.Errorf("syncAllStockInfo coverage too low: %d; keep existing universe", len(all))
+		return
+	}
+	if err := db.Dao.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Unscoped().Where("1=1").Delete(&models.AllStockInfo{}).Error; err != nil {
+			return err
+		}
+		return tx.CreateInBatches(&all, 1000).Error
+	}); err != nil {
+		logger.SugaredLogger.Errorf("atomic replace all_stock_info failed: %v", err)
+		return
+	}
+	logger.SugaredLogger.Infof("all_stock_info atomic replace complete: %d", len(all))
 }
 func (a *App) CheckStockBaseInfo(ctx context.Context) {
 	defer PanicHandler()
@@ -3050,6 +3073,14 @@ func (a *App) initPredictionCronTasks(cronApi *agent.CronTaskApi) {
 			Params:      `{"stockScope":"自选股","days":120}`,
 		},
 		{
+			Name:        "预测工厂-生成五源候选",
+			CronExpr:    "0 30 15 * * 1-5",
+			TaskType:    "prediction_sync_candidates",
+			Enable:      true,
+			Status:      "active",
+			Description: "A股交易日 15:30 在当日技术特征就绪后归一化五类来源，并生成带时点和来源审计的候选快照",
+		},
+		{
 			Name:        "预测工厂-扫描信号",
 			CronExpr:    "0 35 15 * * 1-5",
 			TaskType:    "prediction_scan_signals",
@@ -3260,7 +3291,7 @@ func (a *App) GetCronTaskTypes() []lo.Tuple2[string, string] {
 }
 
 func (a *App) GetPredictionCronStatus() []models.SystemCronTaskStatus {
-	taskTypes := []string{"prediction_sync_features", "prediction_sync_money_flow", "prediction_scan_signals", "prediction_scan_alerts", "prediction_validate_signals"}
+	taskTypes := []string{"prediction_sync_features", "prediction_sync_money_flow", "prediction_sync_candidates", "prediction_scan_signals", "prediction_scan_alerts", "prediction_validate_signals"}
 	result := make([]models.SystemCronTaskStatus, 0, len(taskTypes))
 	api := agent.NewCronTaskApi()
 	a.initPredictionCronTasks(api)
@@ -3631,6 +3662,73 @@ func (a *App) CreatePredictionSession(scene, stockScope, startDate, endDate stri
 		"data":      map[string]any{"session": session, "hypotheses": hypotheses, "decisions": decisions},
 		"sessionId": session.ID,
 	}
+}
+
+// GenerateCandidateSnapshot normalizes the five discovery sources into an
+// auditable, point-in-time candidate universe. It intentionally returns WATCH
+// candidates rather than executable BUY instructions.
+func (a *App) GenerateCandidateSnapshot(request backtest.CandidateGenerateRequest) map[string]any {
+	details, err := backtest.NewCandidatePoolService().Generate(request)
+	if err != nil {
+		return map[string]any{"code": 0, "msg": err.Error()}
+	}
+	return map[string]any{"code": 1, "data": details, "snapshotId": details.Snapshot.ID}
+}
+
+func (a *App) GetCandidateSnapshot(snapshotID uint, decisionAsOf string) map[string]any {
+	var asOf time.Time
+	if strings.TrimSpace(decisionAsOf) != "" {
+		parsed, err := time.Parse(time.RFC3339, decisionAsOf)
+		if err != nil {
+			return map[string]any{"code": 0, "msg": "decisionAsOf 必须是 RFC3339 时间"}
+		}
+		asOf = parsed
+	}
+	details, err := backtest.NewCandidatePoolService().GetSnapshot(snapshotID, asOf)
+	if err != nil {
+		return map[string]any{"code": 0, "msg": err.Error()}
+	}
+	return map[string]any{"code": 1, "data": details}
+}
+
+func (a *App) GetCandidateSnapshots(limit int, scene string) []models.CandidateSnapshot {
+	return backtest.NewCandidatePoolService().ListSnapshots(limit, scene)
+}
+
+func (a *App) DeleteCandidateSnapshot(snapshotID uint) string {
+	var sessionCount int64
+	db.Dao.Model(&models.PredictionSession{}).Where("candidate_snapshot_id = ?", snapshotID).Count(&sessionCount)
+	if sessionCount > 0 {
+		return "该快照已被预测会话引用，为保留审计链不能删除"
+	}
+	if err := backtest.NewCandidatePoolService().DeleteSnapshot(snapshotID); err != nil {
+		return "删除候选快照失败: " + err.Error()
+	}
+	return "候选快照已归档，来源事实与候选项已保留用于审计"
+}
+
+func (a *App) CreatePredictionSessionFromCandidate(snapshotID uint, scene, startDate, endDate string, aiConfigId int) map[string]any {
+	if strings.Contains(scene, "长期") {
+		return map[string]any{"code": 0, "msg": "五源数据缺少点时基本面与估值，长期场景当前仅供观察，不能进入正式量化验证"}
+	}
+	details, err := backtest.NewCandidatePoolService().GetSnapshot(snapshotID, time.Now())
+	if err != nil {
+		return map[string]any{"code": 0, "msg": err.Error()}
+	}
+	if details.Snapshot.Status == "failed" || len(details.Items) == 0 {
+		return map[string]any{"code": 0, "msg": "候选快照无可验证股票"}
+	}
+	if details.Snapshot.Status == "expired" {
+		return map[string]any{"code": 0, "msg": "候选快照已归档，不能创建新的验证会话"}
+	}
+	if endDate > details.Snapshot.TradeDate {
+		return map[string]any{"code": 0, "msg": "历史诊断区间结束日不能晚于候选快照的数据日期；快照之后的表现必须由前向模拟验证"}
+	}
+	result := a.CreatePredictionSession(scene, fmt.Sprintf("snapshot_%d", snapshotID), startDate, endDate, aiConfigId)
+	if result["code"] == 1 {
+		db.Dao.Model(&models.CandidateSnapshot{}).Where("id = ?", snapshotID).Update("status", "validated")
+	}
+	return result
 }
 
 // GetPredictionSession 获取预测会话详情

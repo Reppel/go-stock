@@ -1,5 +1,5 @@
 <script setup>
-import {computed, h, onBeforeMount, onBeforeUnmount, onMounted,onUnmounted, ref,reactive} from 'vue'
+import {computed, h, nextTick, onBeforeMount, onBeforeUnmount, onMounted,onUnmounted, ref,reactive} from 'vue'
 import {GetAIResponseResultList} from "../../wailsjs/go/main/App";
 import {NButton, NEllipsis, NText} from "naive-ui";
 import ResearchReport from "./researchReport.vue";
@@ -23,6 +23,7 @@ import {useRoute} from 'vue-router'
 
 const nowTab = ref("AI分析报告")
 const route = useRoute()
+const predictionFactoryRef = ref(null)
 onBeforeMount(() => {
   nowTab.value = route.query.name
 })
@@ -38,6 +39,10 @@ onUnmounted(() => {
 EventsOn("changeResearchTab", async (msg) => {
   console.log("changeResearchTab", msg)
   updateTab(msg.name)
+  if (msg.candidateRequest) {
+    await nextTick()
+    predictionFactoryRef.value?.handleCandidateSourceRequest(msg.candidateRequest)
+  }
 })
 function updateTab(name) {
   nowTab.value = name
@@ -79,7 +84,7 @@ function updateTab(name) {
         <SelectStock/>
       </n-tab-pane>
       <n-tab-pane name="AI预测工厂">
-        <PredictionFactory/>
+        <PredictionFactory ref="predictionFactoryRef"/>
       </n-tab-pane>
       <n-tab-pane name="定时任务">
         <CronTaskManager />

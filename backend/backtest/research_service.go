@@ -17,6 +17,7 @@ type ResearchTemplate string
 
 const (
 	ResearchTemplateFactorScan         ResearchTemplate = "factor_effectiveness_scan"
+	ResearchTemplateFactorSelection    ResearchTemplate = "factor_selection_report"
 	ResearchTemplateSectorRotation     ResearchTemplate = "sector_rotation_detection"
 	ResearchTemplateMoneyFlowAnomaly   ResearchTemplate = "money_flow_anomaly_detection"
 	ResearchTemplateFailureAttribution ResearchTemplate = "failure_sample_attribution"
@@ -40,6 +41,7 @@ func (s *ResearchService) GenerateIdeas(sessionID uint, scene, stockScope, start
 	s.features = s.loadFeatureDataset(startDate, endDate, universe)
 	s.loadSectors()
 	templates := []ResearchTemplate{
+		ResearchTemplateFactorSelection,
 		ResearchTemplateFactorScan,
 		ResearchTemplateMoneyFlowAnomaly,
 		ResearchTemplateSectorRotation,
@@ -65,7 +67,7 @@ func (s *ResearchService) GenerateIdeas(sessionID uint, scene, stockScope, start
 }
 
 func (s *ResearchService) buildIdea(template ResearchTemplate, scene, stockScope, startDate, endDate string, universe []string) ResearchIdea {
-	factors := s.templateFactors(template)
+	factors := s.templateFactors(template, startDate, endDate)
 	candidates := make([]ResearchCandidateFactor, 0, len(factors))
 	for _, factorID := range factors {
 		candidates = append(candidates, ResearchCandidateFactor{
@@ -81,6 +83,14 @@ func (s *ResearchService) buildIdea(template ResearchTemplate, scene, stockScope
 	if template == ResearchTemplateExternalCandidate {
 		ruleIdeas = []string{"candidate external data source must be synchronized, assigned available_at, coverage-tested, and registered before DSL use"}
 		risks = append(risks, "external data is not tradable until promoted from candidate to active registry status")
+	}
+	if template == ResearchTemplateFactorSelection {
+		ruleIdeas = []string{
+			"factors listed above are ranked by IC in the current market window",
+			"prefer factors with high |IC| and RankIC consistency",
+			"avoid combining highly correlated factors (correlation > 0.7)",
+			"use only registered indicators and validate with unified feature view",
+		}
 	}
 	return ResearchIdea{
 		ID:               fmt.Sprintf("%s-%d", template, time.Now().UnixNano()),
@@ -99,10 +109,22 @@ func (s *ResearchService) buildIdea(template ResearchTemplate, scene, stockScope
 	}
 }
 
-func (s *ResearchService) templateFactors(template ResearchTemplate) []string {
+func (s *ResearchService) templateFactors(template ResearchTemplate, startDate, endDate string) []string {
 	switch template {
-	case ResearchTemplateFactorScan:
-		return []string{"stock_feature.MA20", "stock_feature.VolumeRatio", "stock_feature.ChangeRate20"}
+	case ResearchTemplateFactorSelection:
+			// 动态因子选择：基于 IC 排名选择当前区间最有效的因子
+			selector := NewFactorSelector(s.features, s.sectors, startDate, endDate)
+			effective := selector.GetEffectiveFactors()
+			if len(effective) == 0 {
+				effective = []string{"stock_feature.MA20", "stock_feature.VolumeRatio", "stock_feature.ChangeRate20"}
+			}
+			return effective
+		case ResearchTemplateFactorScan:
+		return []string{
+				"stock_feature.MA20", "stock_feature.VolumeRatio", "stock_feature.ChangeRate20",
+				"stock_feature.Volatility20", "stock_feature.RSI14", "stock_feature.ATR",
+				"stock_feature.AmihudRatio", "stock_feature.ChangeRate60",
+			}
 	case ResearchTemplateMoneyFlowAnomaly:
 		return []string{"stock_feature.FundFlow5", "stock_feature.FundFlow20", "money_flow.MainNetInflow5"}
 	case ResearchTemplateSectorRotation:
@@ -126,47 +148,9 @@ func (s *ResearchService) templateFactors(template ResearchTemplate) []string {
 
 func (s *ResearchService) factorEvidence(factorID, startDate, endDate string, universe []string) ResearchFactorEvidence {
 	_ = universe
-	evidence := ResearchFactorEvidence{
-		StartDate:        startDate,
-		EndDate:          endDate,
-		Horizon:          5,
-		SampleSize:       0,
-		IC:               0,
-		RankIC:           0,
-		HitRate:          0,
-		AvgForwardReturn: 0,
-		PValue:           1,
-		SectorIC:         0,
-		SectorICStd:      0,
-		TimeDecay:        "unknown",
-		RecentIC:         0,
-	}
-	observations := s.factorObservations(factorID, evidence.Horizon)
-	evidence.SampleSize = len(observations)
-	if len(observations) < 3 {
-		return evidence
-	}
-	factors, returns := observationVectors(observations)
-	evidence.IC, evidence.RankIC, evidence.PValue = dailyCrossSectionalCorrelation(observations)
-	evidence.AvgForwardReturn = meanFloat(returns)
-	factorMean := meanFloat(factors)
-	returnMean := meanFloat(returns)
-	hits := 0
-	for i := range factors {
-		if (factors[i]-factorMean)*(returns[i]-returnMean) > 0 {
-			hits++
-		}
-	}
-	evidence.HitRate = float64(hits) / float64(len(observations))
-	recent := recentObservations(observations, 0.30)
-	evidence.RecentIC, _, _ = dailyCrossSectionalCorrelation(recent)
-	evidence.SectorIC, evidence.SectorICStd = sectorCorrelationStats(observations)
-	if math.Abs(evidence.RecentIC) < math.Abs(evidence.IC)*0.75 {
-		evidence.TimeDecay = "decaying"
-	} else {
-		evidence.TimeDecay = "stable"
-	}
-	return evidence
+	calc := NewFactorICCalculator(s.features, s.sectors, startDate, endDate)
+	result := calc.Calculate(factorID, 5)
+	return result.ToResearchEvidence(startDate, endDate, 5)
 }
 
 func (s *ResearchService) sampleSize(startDate, endDate string, universe []string) int {
@@ -206,156 +190,6 @@ func (s *ResearchService) loadSectors() {
 		}
 		s.sectors[feature.StockCode] = industry
 	}
-}
-
-func (s *ResearchService) factorObservations(factorID string, horizon int) []researchObservation {
-	if horizon <= 0 {
-		horizon = 5
-	}
-	byStock := make(map[string][]models.StockFeature)
-	for _, feature := range s.features {
-		byStock[feature.StockCode] = append(byStock[feature.StockCode], feature)
-	}
-	result := make([]researchObservation, 0, len(s.features))
-	engine := NewStrategyEngine()
-	name := canonicalIndicatorName("", factorID)
-	externalValues := s.externalFactorValues(factorID)
-	for stockCode, features := range byStock {
-		for i := 0; i+horizon < len(features); i++ {
-			current := features[i]
-			future := features[i+horizon]
-			if current.Close <= 0 || future.Close <= 0 {
-				continue
-			}
-			factor := engine.GetIndicatorValue(name, current)
-			if !strings.HasPrefix(factorID, "stock_feature.") {
-				var exists bool
-				factor, exists = externalValues[current.Date+"|"+NormalizeCandidateStockCode(stockCode)]
-				if !exists {
-					continue
-				}
-			}
-			if (strings.Contains(factorID, "FundFlow") || strings.Contains(factorID, "Volume")) && factor == 0 {
-				continue
-			}
-			result = append(result, researchObservation{
-				Date: current.Date, StockCode: stockCode, Sector: s.sectors[stockCode], Factor: factor,
-				ForwardReturn: future.Close/current.Close - 1,
-			})
-		}
-	}
-	sort.Slice(result, func(i, j int) bool { return result[i].Date < result[j].Date })
-	return result
-}
-
-func (s *ResearchService) externalFactorValues(factorID string) map[string]float64 {
-	result := map[string]float64{}
-	if db.Dao == nil || len(s.features) == 0 {
-		return result
-	}
-	startDate, endDate := s.features[0].Date, s.features[0].Date
-	for _, feature := range s.features {
-		if feature.Date < startDate {
-			startDate = feature.Date
-		}
-		if feature.Date > endDate {
-			endDate = feature.Date
-		}
-	}
-	featureAsOf := make(map[string]time.Time, len(s.features))
-	for _, feature := range s.features {
-		asOf := feature.DataAsOf
-		if asOf.IsZero() {
-			asOf = featureDataAsOf(feature.Date)
-		}
-		featureAsOf[feature.Date+"|"+NormalizeCandidateStockCode(feature.StockCode)] = asOf
-	}
-	pointInTimeAvailable := func(key string, availableAt time.Time) bool {
-		asOf, ok := featureAsOf[key]
-		return ok && (availableAt.IsZero() || !availableAt.After(asOf))
-	}
-	switch {
-	case strings.HasPrefix(factorID, "event."):
-		var rows []models.StockEventDaily
-		db.Dao.Where("trade_date >= ? AND trade_date <= ? AND feature_version = ?", startDate, endDate, CurrentFeatureVersion).Find(&rows)
-		for _, row := range rows {
-			key := row.TradeDate + "|" + NormalizeCandidateStockCode(row.StockCode)
-			if !pointInTimeAvailable(key, row.AvailableAt) {
-				continue
-			}
-			value := float64(row.ChangeEventCount)
-			switch factorID {
-			case "event.HasLargeBuy":
-				value = boolFloat(row.HasLargeBuy)
-			case "event.HasRapidRise":
-				value = boolFloat(row.HasRapidRise)
-			}
-			result[key] = value
-		}
-	case strings.HasPrefix(factorID, "screening."):
-		var rows []models.StockScreeningFactDaily
-		db.Dao.Where("trade_date >= ? AND trade_date <= ? AND feature_version = ? AND calculated = ?", startDate, endDate, CurrentFeatureVersion, true).Find(&rows)
-		for _, row := range rows {
-			key := row.TradeDate + "|" + NormalizeCandidateStockCode(row.StockCode)
-			if !pointInTimeAvailable(key, row.AvailableAt) {
-				continue
-			}
-			value := float64(row.PatternCount)
-			switch factorID {
-			case "screening.MACDGoldenCross":
-				value = boolFloat(row.MACDGoldenCross)
-			case "screening.MABullish":
-				value = boolFloat(row.MABullish)
-			}
-			result[key] = value
-		}
-	case strings.HasPrefix(factorID, "limitup."):
-		var rows []models.UplimitStockDaily
-		db.Dao.Where("trade_date >= ? AND trade_date <= ?", startDate, endDate).Order("available_at asc").Find(&rows)
-		latestAt := map[string]time.Time{}
-		for _, row := range rows {
-			key := row.TradeDate + "|" + NormalizeCandidateStockCode(row.StockCode)
-			if !pointInTimeAvailable(key, row.AvailableAt) || (!latestAt[key].IsZero() && row.AvailableAt.Before(latestAt[key])) {
-				continue
-			}
-			value := float64(row.KeepTimes)
-			switch factorID {
-			case "limitup.SealRatioClose":
-				value = row.SealRatioClose
-			case "limitup.ExplodedCount":
-				value = float64(row.ExplodeCount)
-				if row.Exploded && value == 0 {
-					value = 1
-				}
-			}
-			latestAt[key] = row.AvailableAt
-			result[key] = value
-		}
-	case strings.HasPrefix(factorID, "recommendation."):
-		var rows []models.ModelRecommendationEvent
-		db.Dao.Where("trade_date >= ? AND trade_date <= ? AND independent_for_research = ?", startDate, endDate, true).Find(&rows)
-		modelsByKey := map[string]map[string]bool{}
-		counts := map[string]int{}
-		for _, row := range rows {
-			key := row.TradeDate + "|" + NormalizeCandidateStockCode(row.StockCode)
-			if !pointInTimeAvailable(key, row.AvailableAt) {
-				continue
-			}
-			counts[key]++
-			if modelsByKey[key] == nil {
-				modelsByKey[key] = map[string]bool{}
-			}
-			modelsByKey[key][row.ModelName] = true
-		}
-		for key, count := range counts {
-			if factorID == "recommendation.ModelCount" {
-				result[key] = float64(len(modelsByKey[key]))
-			} else {
-				result[key] = float64(count)
-			}
-		}
-	}
-	return result
 }
 
 func dailyCrossSectionalCorrelation(observations []researchObservation) (float64, float64, float64) {
@@ -493,7 +327,10 @@ func sectorCorrelationStats(observations []researchObservation) (float64, float6
 	for _, ic := range ics {
 		variance += (ic - meanIC) * (ic - meanIC)
 	}
-	return meanIC, math.Sqrt(variance / float64(len(ics)))
+	if len(ics) < 2 {
+		return meanIC, 0
+	}
+	return meanIC, math.Sqrt(variance / float64(len(ics)-1))
 }
 
 func meanFloat(values []float64) float64 {

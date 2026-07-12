@@ -1,6 +1,9 @@
 package models
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // PredictionSession 用户一次完整的预测请求
 type PredictionSession struct {
@@ -344,6 +347,15 @@ type StockFeature struct {
 	FundFlow20     float64   `json:"fundFlow20" md:"20日资金净流入"`
 	ChangeRate5    float64   `json:"changeRate5" md:"5日涨跌幅"`
 	ChangeRate20   float64   `json:"changeRate20" md:"20日涨跌幅"`
+	// Advanced features (v3)
+	Volatility20   float64 `json:"volatility20" md:"20日波动率"`
+	Volatility60   float64 `json:"volatility60" md:"60日波动率"`
+	AmihudRatio    float64 `json:"amihudRatio" md:"Amihud非流动性"`
+	HighLowRatio   float64 `json:"highLowRatio" md:"日内振幅比"`
+	OBV            float64 `json:"obv" md:"累积能量潮"`
+	RSI14          float64 `json:"rsi14" md:"RSI14"`
+	ChangeRate60   float64 `json:"changeRate60" md:"60日涨跌幅"`
+	ChangeRate120  float64 `json:"changeRate120" md:"120日涨跌幅"`
 	DataAsOf       time.Time `json:"dataAsOf" md:"数据截至"`
 	Source         string    `json:"source" gorm:"size:50" md:"数据源"`
 	FeatureVersion string    `json:"featureVersion" gorm:"size:50;index:idx_stock_feature_code_date_version;uniqueIndex:uidx_stock_feature_code_date_version" md:"特征版本"`
@@ -662,6 +674,38 @@ type CandidateSourceFact struct {
 
 func (CandidateSourceFact) TableName() string { return "candidate_source_fact" }
 
+// FactFloat extracts a float64 value from the FactsJSON map by key.
+// Returns 0, false when the key is absent or the value is not numeric.
+func (f CandidateSourceFact) FactFloat(key string) (float64, bool) {
+	if f.FactsJSON == "" {
+		return 0, false
+	}
+	var facts map[string]any
+	if err := json.Unmarshal([]byte(f.FactsJSON), &facts); err != nil {
+		return 0, false
+	}
+	v, ok := facts[key]
+	if !ok {
+		return 0, false
+	}
+	switch val := v.(type) {
+	case float64:
+		return val, true
+	case int:
+		return float64(val), true
+	case int64:
+		return float64(val), true
+	case json.Number:
+		f, err := val.Float64()
+		if err != nil {
+			return 0, false
+		}
+		return f, true
+	default:
+		return 0, false
+	}
+}
+
 // ScreeningExecutionSnapshot freezes the exact output received from the
 // pattern/indicator pages. It prevents a page result from being mislabeled as
 // a locally reproduced technical fact.
@@ -812,6 +856,33 @@ type SystemCronTaskStatus struct {
 	LastRunResult string     `json:"lastRunResult"`
 	Description   string     `json:"description"`
 }
+
+// RecommendStock 推荐股票，从 candidate_snapshot_item 提炼，独立于快照生命周期。
+// 同 stockCode + tradeDate upsert 写入，支持物理删除而不影响审计链。
+type RecommendStock struct {
+	ID            uint      `json:"id" gorm:"primarykey"`
+	StockCode     string    `json:"stockCode" gorm:"size:20;index:idx_recommend_stock_code_date;uniqueIndex:uidx_recommend_stock_code_date"`
+	StockName     string    `json:"stockName" gorm:"size:50"`
+	Industry      string    `json:"industry" gorm:"size:100"`
+	Concept       string    `json:"concept" gorm:"size:500"`
+	SourceCount   int       `json:"sourceCount"`
+	SourceScore   float64   `json:"sourceScore"`
+	BestScene     string    `json:"bestScene" gorm:"size:50"`
+	ShortScore    float64   `json:"shortScore"`
+	SwingScore    float64   `json:"swingScore"`
+	TrendScore    float64   `json:"trendScore"`
+	LongTermScore float64   `json:"longTermScore"`
+	SourcesJSON   string    `json:"sourcesJson" gorm:"type:text"`
+	ReasonsJSON   string    `json:"reasonsJson" gorm:"type:text"`
+	RisksJSON     string    `json:"risksJson" gorm:"type:text"`
+	AdviceJSON    string    `json:"adviceJson" gorm:"type:text"`
+	SnapshotID    uint      `json:"snapshotId" gorm:"index"`
+	TradeDate     string    `json:"tradeDate" gorm:"size:10;index:idx_recommend_stock_code_date;uniqueIndex:uidx_recommend_stock_code_date"`
+	CreatedAt     time.Time `json:"createdAt" gorm:"autoCreateTime"`
+	UpdatedAt     time.Time `json:"updatedAt" gorm:"autoUpdateTime"`
+}
+
+func (RecommendStock) TableName() string { return "recommend_stock" }
 
 type FeatureCoverage struct {
 	StockScope            string   `json:"stockScope"`

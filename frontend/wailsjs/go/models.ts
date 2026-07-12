@@ -1,15 +1,15 @@
 export namespace backtest {
-
+	
 	export class CandidateSourceInput {
 	    stockCode: string;
 	    stockName: string;
 	    rank: number;
 	    rawJson: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new CandidateSourceInput(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.stockCode = source["stockCode"];
@@ -31,11 +31,12 @@ export namespace backtest {
 	    limit: number;
 	    indicatorQuery: string;
 	    minAmount: number;
-
+	    force: boolean;
+	
 	    static createFrom(source: any = {}) {
 	        return new CandidateGenerateRequest(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
@@ -50,8 +51,9 @@ export namespace backtest {
 	        this.limit = source["limit"];
 	        this.indicatorQuery = source["indicatorQuery"];
 	        this.minAmount = source["minAmount"];
+	        this.force = source["force"];
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -70,7 +72,7 @@ export namespace backtest {
 		    return a;
 		}
 	}
-
+	
 	export class IndicatorDefinition {
 	    indicatorId: string;
 	    name: string;
@@ -2484,11 +2486,11 @@ export namespace models {
 	    createdAt: any;
 	    // Go type: time
 	    updatedAt: any;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new CandidateSnapshot(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -2516,7 +2518,7 @@ export namespace models {
 	        this.createdAt = this.convertValues(source["createdAt"], null);
 	        this.updatedAt = this.convertValues(source["updatedAt"], null);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -4341,3 +4343,4 @@ export namespace models {
 	}
 
 }
+

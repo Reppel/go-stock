@@ -78,6 +78,7 @@ func ensurePredictionTables() error {
 		&models.ModelRecommendationEvent{},
 		&models.ScreeningExecutionSnapshot{},
 		&models.ScreeningExecutionItem{},
+		&models.RecommendStock{},
 	); err != nil {
 		return err
 	}
@@ -1529,4 +1530,148 @@ func (s *PredictionService) nthTradingDateAfter(date string, horizon int) string
 		return ""
 	}
 	return dates[horizon-1]
+}
+
+// DeleteSession 物理删除预测会话及其关联数据
+func (s *PredictionService) DeleteSession(sessionID uint) error {
+	if err := ensurePredictionTables(); err != nil {
+		return err
+	}
+	return db.Dao.Transaction(func(tx *gorm.DB) error {
+		var hypothesisIDs []uint
+		tx.Model(&models.PredictionHypothesis{}).Where("session_id = ?", sessionID).Pluck("id", &hypothesisIDs)
+
+		if len(hypothesisIDs) > 0 {
+			tx.Where("hypothesis_id IN ?", hypothesisIDs).Delete(&models.PredictionHypothesisDaily{})
+			tx.Where("hypothesis_id IN ?", hypothesisIDs).Delete(&models.PredictionSignal{})
+			tx.Where("hypothesis_id IN ?", hypothesisIDs).Delete(&models.PredictionTrade{})
+			tx.Where("hypothesis_id IN ?", hypothesisIDs).Delete(&models.PredictionPaperAccount{})
+			tx.Where("hypothesis_id IN ?", hypothesisIDs).Delete(&models.PredictionPaperPosition{})
+			tx.Where("hypothesis_id IN ?", hypothesisIDs).Delete(&models.PredictionPaperTrade{})
+			tx.Where("hypothesis_id IN ?", hypothesisIDs).Delete(&models.PredictionPaperDaily{})
+		}
+
+		tx.Where("session_id = ?", sessionID).Delete(&models.PredictionHypothesis{})
+		tx.Where("session_id = ?", sessionID).Delete(&models.PredictionDecision{})
+		tx.Where("session_id = ?", sessionID).Delete(&models.PredictionAlertLog{})
+		tx.Where("session_id = ?", sessionID).Delete(&models.TradeDecisionLog{})
+		tx.Where("session_id = ?", sessionID).Delete(&models.PredictionGenerationAudit{})
+		tx.Where("session_id = ?", sessionID).Delete(&models.PredictionResearchIdea{})
+		return tx.Where("id = ?", sessionID).Delete(&models.PredictionSession{}).Error
+	})
+}
+
+// DeleteHypothesis 物理删除单个预测假设及其关联数据
+func (s *PredictionService) DeleteHypothesis(hypothesisID uint) error {
+	if err := ensurePredictionTables(); err != nil {
+		return err
+	}
+	return db.Dao.Transaction(func(tx *gorm.DB) error {
+		tx.Where("hypothesis_id = ?", hypothesisID).Delete(&models.PredictionHypothesisDaily{})
+		tx.Where("hypothesis_id = ?", hypothesisID).Delete(&models.PredictionSignal{})
+		tx.Where("hypothesis_id = ?", hypothesisID).Delete(&models.PredictionTrade{})
+		tx.Where("hypothesis_id = ?", hypothesisID).Delete(&models.PredictionPaperAccount{})
+		tx.Where("hypothesis_id = ?", hypothesisID).Delete(&models.PredictionPaperPosition{})
+		tx.Where("hypothesis_id = ?", hypothesisID).Delete(&models.PredictionPaperTrade{})
+		tx.Where("hypothesis_id = ?", hypothesisID).Delete(&models.PredictionPaperDaily{})
+		return tx.Where("id = ?", hypothesisID).Delete(&models.PredictionHypothesis{}).Error
+	})
+}
+
+// GetDataQualityReport 获取数据质量报告
+func (s *PredictionService) GetDataQualityReport(startDate, endDate string, universe []string) *DataQualityReport {
+	checker := NewDataQualityChecker(startDate, endDate, universe)
+	return checker.Run()
+}
+
+// GetFeatureDataSummary 获取特征数据摘要
+func (s *PredictionService) GetFeatureDataSummary() *FeatureDataSummary {
+	return GetFeatureDataSummary()
+}
+
+// GetFactorSelectionReport 获取因子选择报告
+func (s *PredictionService) GetFactorSelectionReport(startDate, endDate string, universe []string) *FactorSelectionResult {
+	selector := FactorSelectorFromDB(startDate, endDate, universe)
+	if selector == nil {
+		return &FactorSelectionResult{}
+	}
+	candidateFactors := []string{
+		"stock_feature.MA20", "stock_feature.MA60", "stock_feature.VolumeRatio",
+		"stock_feature.ChangeRate5", "stock_feature.ChangeRate20", "stock_feature.ChangeRate60",
+		"stock_feature.Volatility20", "stock_feature.Volatility60",
+		"stock_feature.RSI6", "stock_feature.RSI12", "stock_feature.RSI14",
+		"stock_feature.KDJ_K", "stock_feature.MACD", "stock_feature.ATR",
+		"stock_feature.AmihudRatio", "stock_feature.HighLowRatio",
+		"stock_feature.FundFlow5", "stock_feature.FundFlow20",
+	}
+	return selector.Run(candidateFactors)
+}
+
+// GetPortfolioRiskReport 获取组合风险报告
+func (s *PredictionService) GetPortfolioRiskReport() *PortfolioRiskReport {
+	var hypotheses []models.PredictionHypothesis
+	if db.Dao != nil {
+		db.Dao.Where("status IN ?", []string{"active", "paper_trade", "active_candidate"}).Find(&hypotheses)
+	}
+	return GetPortfolioRiskReport(hypotheses)
+}
+
+// GetMonteCarloValidation 获取蒙特卡洛验证结果
+func (s *PredictionService) GetMonteCarloValidation(hypothesisID uint) *MonteCarloResult {
+	var hypothesis models.PredictionHypothesis
+	if err := db.Dao.First(&hypothesis, hypothesisID).Error; err != nil {
+		return &MonteCarloResult{Simulations: 0}
+	}
+	rule, err := JSONToRule(hypothesis.RuleJSON)
+	if err != nil {
+		return &MonteCarloResult{Simulations: 0}
+	}
+	config := storedBacktestConfig(hypothesis.BacktestConfigJSON)
+	var session models.PredictionSession
+	if err := db.Dao.First(&session, hypothesis.SessionID).Error; err != nil {
+		return &MonteCarloResult{Simulations: 0}
+	}
+	universe := NewStockPoolService().GetStockPool(session.StockScope)
+	result, err := s.validator.ValidateWithConfig(rule, universe, session.StartDate, session.EndDate, hypothesis.TimeHorizon, config)
+	if err != nil || result == nil {
+		return &MonteCarloResult{Simulations: 0}
+	}
+	return BacktestMonteCarlo(result)
+}
+
+// GetHypothesisStabilityCheck 检查策略稳定性
+func (s *PredictionService) GetHypothesisStabilityCheck(hypothesisID uint) (bool, string) {
+	var hypothesis models.PredictionHypothesis
+	if err := db.Dao.First(&hypothesis, hypothesisID).Error; err != nil {
+		return false, "策略不存在"
+	}
+	rule, err := JSONToRule(hypothesis.RuleJSON)
+	if err != nil {
+		return false, "策略规则无效"
+	}
+	config := storedBacktestConfig(hypothesis.BacktestConfigJSON)
+	var session models.PredictionSession
+	if err := db.Dao.First(&session, hypothesis.SessionID).Error; err != nil {
+		return false, "会话不存在"
+	}
+	universe := NewStockPoolService().GetStockPool(session.StockScope)
+	result, err := s.validator.ValidateWithConfig(rule, universe, session.StartDate, session.EndDate, hypothesis.TimeHorizon, config)
+	if err != nil || result == nil {
+		return false, "回测失败"
+	}
+	return ValidateResultStability(result)
+}
+
+// PreprocessFeatures 执行因子预处理
+func (s *PredictionService) PreprocessFeatures(stockCodes []string) *PreprocessResult {
+	return PreprocessFeatures(stockCodes)
+}
+
+// GetPortfolioOptimization 获取组合优化方案（等权/风险平价/最小方差/最大夏普）
+func (s *PredictionService) GetPortfolioOptimization() []PortfolioAllocation {
+	var hypotheses []models.PredictionHypothesis
+	if db.Dao != nil {
+		db.Dao.Where("status IN ?", []string{"active", "paper_trade", "active_candidate"}).Find(&hypotheses)
+	}
+	return GetPortfolioOptimization(hypotheses)
 }

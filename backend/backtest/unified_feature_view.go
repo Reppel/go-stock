@@ -177,6 +177,14 @@ func (s *UnifiedFeatureViewService) fillStockFeature(view *UnifiedFeatureView, f
 		"stock_feature.FundFlow20":   f.FundFlow20,
 		"stock_feature.ChangeRate5":  f.ChangeRate5,
 		"stock_feature.ChangeRate20": f.ChangeRate20,
+		"stock_feature.Volatility20":  f.Volatility20,
+		"stock_feature.Volatility60":  f.Volatility60,
+		"stock_feature.AmihudRatio":   f.AmihudRatio,
+		"stock_feature.HighLowRatio":  f.HighLowRatio,
+		"stock_feature.OBV":           f.OBV,
+		"stock_feature.RSI14":         f.RSI14,
+		"stock_feature.ChangeRate60":  f.ChangeRate60,
+		"stock_feature.ChangeRate120": f.ChangeRate120,
 	}
 	for id, value := range values {
 		view.Feature[id] = value

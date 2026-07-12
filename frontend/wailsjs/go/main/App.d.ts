@@ -35,6 +35,16 @@ export function BatchDeleteAIResponseResult(arg1:Array<number>):Promise<string>;
 
 export function BatchDeleteAllStockInfo(arg1:Array<number>):Promise<string>;
 
+export function BatchDeleteCandidateSnapshots(arg1:Array<number>):Promise<Record<string, any>>;
+
+export function BatchDeletePredictionAlerts(arg1:Array<number>):Promise<Record<string, any>>;
+
+export function BatchDeletePredictionHypotheses(arg1:Array<number>):Promise<Record<string, any>>;
+
+export function BatchDeletePredictionSessions(arg1:Array<number>):Promise<Record<string, any>>;
+
+export function BatchDeleteTradingRecords(arg1:Array<number>):Promise<Record<string, any>>;
+
 export function CalculateNextRunTime(arg1:string):Promise<string>;
 
 export function CalculateNextRunTimes(arg1:string,arg2:number):Promise<Array<string>>;
@@ -78,6 +88,12 @@ export function DeleteCronTask(arg1:number):Promise<string>;
 export function DeleteCustomStrategy(arg1:number):Promise<string>;
 
 export function DeleteMCPServer(arg1:number):Promise<string>;
+
+export function DeletePredictionAlert(arg1:number):Promise<string>;
+
+export function DeletePredictionHypothesis(arg1:number):Promise<string>;
+
+export function DeletePredictionSession(arg1:number):Promise<string>;
 
 export function DeletePromptTemplate(arg1:number):Promise<string>;
 

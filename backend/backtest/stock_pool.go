@@ -23,6 +23,8 @@ func (s *StockPoolService) GetStockPool(scope string) []string {
 		return s.getAllAStockCodes()
 	case "全部":
 		return s.getAllAStockCodes()
+	case "snapshot_all":
+		return s.getLatestSnapshotCodes()
 	case "自选股":
 		return s.getFollowedStockCodes()
 	default:
@@ -127,4 +129,21 @@ func stockNameOrCode(stockCode, fallback string) string {
 		return fallback
 	}
 	return code
+}
+
+// getLatestSnapshotCodes 从最新的候选快照中获取股票代码列表
+func (s *StockPoolService) getLatestSnapshotCodes() []string {
+	if db.Dao == nil {
+		return nil
+	}
+	// 取最新一条非失败的快照
+	var latest models.CandidateSnapshot
+	if err := db.Dao.Where("status != ?", "failed").Order("available_at desc").First(&latest).Error; err != nil {
+		return nil
+	}
+	var codes []string
+	db.Dao.Model(&models.CandidateSnapshotItem{}).
+		Where("snapshot_id = ?", latest.ID).
+		Order("source_rank asc").Pluck("stock_code", &codes)
+	return uniqueStrings(codes)
 }

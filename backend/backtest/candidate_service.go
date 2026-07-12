@@ -40,6 +40,7 @@ type CandidateGenerateRequest struct {
 	Limit          int                    `json:"limit"`
 	IndicatorQuery string                 `json:"indicatorQuery"`
 	MinAmount      float64                `json:"minAmount"`
+	Force          bool                   `json:"force"`
 }
 
 type CandidateSourceInput struct {
@@ -204,7 +205,10 @@ func (s *CandidatePoolService) Generate(request CandidateGenerateRequest) (*Cand
 	})
 	var existing models.CandidateSnapshot
 	if err := db.Dao.Where("snapshot_key = ?", snapshotKey).First(&existing).Error; err == nil {
-		return s.GetSnapshot(existing.ID, now)
+		if !request.Force {
+			return s.GetSnapshot(existing.ID, now)
+		}
+		db.Dao.Model(&existing).Updates(map[string]any{"status": "expired", "error_message": "force regenerated"})
 	} else if err != gorm.ErrRecordNotFound {
 		return nil, err
 	}
@@ -272,6 +276,12 @@ func (s *CandidatePoolService) Generate(request CandidateGenerateRequest) (*Cand
 	}
 	snapshot.Status, snapshot.ErrorMessage, snapshot.AblationJSON = status, errMsg, string(ablationJSON)
 	snapshot.CandidateCount, snapshot.Coverage, snapshot.RawHash = len(items), coverage, rawHash
+
+	// 自动触发特征数据同步，确保五源候选股票有基本特征数据
+	if len(items) > 0 {
+		s.ensureCandidateFeatures(items)
+	}
+
 	return &CandidateSnapshotDetails{Snapshot: snapshot, Items: items, Facts: facts, Freshness: freshness}, nil
 }
 
@@ -464,10 +474,9 @@ func (s *CandidatePoolService) collectRecommendations(request CandidateGenerateR
 			AvailableAt: availableAt, DataAsOf: availableAt, FeatureVersion: CurrentFeatureVersion,
 			RecommendationHash: hash, ValidationStatus: "candidate",
 		}
-		_ = db.Dao.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "source_record_id"}, {Name: "stock_code"}, {Name: "source"}},
-			DoUpdates: clause.AssignmentColumns([]string{"scene", "horizon", "rating", "reference_price", "buy_price_min", "buy_price_max", "stop_loss_price", "take_profit_price", "available_at", "data_as_of", "recommendation_hash", "updated_at"}),
-		}).Create(&event).Error
+		db.Dao.Where("source_record_id = ? AND stock_code = ? AND source = ?",
+			event.SourceRecordID, event.StockCode, event.Source).Delete(&models.ModelRecommendationEvent{})
+		_ = db.Dao.Create(&event).Error
 		facts := map[string]any{
 			"modelName": recommendation.ModelName, "rating": recommendation.Rating,
 			"referencePrice": refPrice, "buyPriceMin": recommendation.RecommendBuyPriceMin,
@@ -605,10 +614,12 @@ func (s *CandidatePoolService) AggregateStockEvents(tradeDate string, decisionAs
 	if len(rows) == 0 {
 		return nil
 	}
-	return db.Dao.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "stock_code"}, {Name: "trade_date"}, {Name: "feature_version"}},
-		DoUpdates: clause.AssignmentColumns([]string{"data_as_of", "available_at", "change_event_count", "has_large_buy", "has_large_sell", "has_limit_up", "has_limit_down", "has_rapid_rise", "has_rapid_fall", "source"}),
-	}).CreateInBatches(rows, 200).Error
+	// 先删后插，避免 ON CONFLICT 依赖唯一索引（旧数据库可能缺索引）
+	for _, row := range rows {
+		db.Dao.Where("stock_code = ? AND trade_date = ? AND feature_version = ?",
+			row.StockCode, row.TradeDate, row.FeatureVersion).Delete(&models.StockEventDaily{})
+	}
+	return db.Dao.CreateInBatches(rows, 200).Error
 }
 
 func maxStockEventCreatedAt(events []models.StockChangeHistory, fallback time.Time) time.Time {
@@ -669,10 +680,12 @@ func (s *CandidatePoolService) BuildScreeningFacts(tradeDate string) error {
 			PatternCount: len(conditions), ConditionsJSON: string(conditionsJSON), Source: "local_stock_feature/v1",
 		})
 	}
-	return db.Dao.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "stock_code"}, {Name: "trade_date"}, {Name: "feature_version"}},
-		DoUpdates: clause.AssignmentColumns([]string{"data_as_of", "available_at", "calculated", "coverage", "status", "macd_golden_cross", "macd_above_zero", "kdj_golden_cross", "ma_bullish", "ma_bearish", "break_ma20", "boll_breakout", "volume_breakout", "oversold", "overbought", "pattern_count", "conditions_json", "source", "updated_at"}),
-	}).CreateInBatches(rows, 300).Error
+	// 先删后插，避免 ON CONFLICT 依赖唯一索引
+	for _, row := range rows {
+		db.Dao.Where("stock_code = ? AND trade_date = ? AND feature_version = ?",
+			row.StockCode, row.TradeDate, row.FeatureVersion).Delete(&models.StockScreeningFactDaily{})
+	}
+	return db.Dao.CreateInBatches(rows, 300).Error
 }
 
 func boolCoverage(hasPrevious bool) float64 {
@@ -1362,4 +1375,52 @@ func containsString(values []string, target string) bool {
 		}
 	}
 	return false
+}
+
+// ensureCandidateFeatures 自动同步五源候选股票的特征数据（仅同步缺失的股票，避免重复）
+func (s *CandidatePoolService) ensureCandidateFeatures(items []models.CandidateSnapshotItem) {
+	if len(items) == 0 || db.Dao == nil {
+		return
+	}
+	codes := make([]string, 0, len(items))
+	seen := make(map[string]bool, len(items))
+	for _, item := range items {
+		code := strings.TrimSpace(item.StockCode)
+		if code == "" || seen[code] {
+			continue
+		}
+		seen[code] = true
+		codes = append(codes, code)
+	}
+	if len(codes) == 0 {
+		return
+	}
+	var existingCodes []string
+	db.Dao.Model(&models.StockFeature{}).
+		Where("stock_code IN ? AND feature_version = ? AND adjusted = ?", codes, CurrentFeatureVersion, true).
+		Distinct("stock_code").Pluck("stock_code", &existingCodes)
+	existingSet := make(map[string]bool, len(existingCodes))
+	for _, code := range existingCodes {
+		existingSet[code] = true
+	}
+	needSync := make([]string, 0, len(codes))
+	for _, code := range codes {
+		if !existingSet[code] {
+			needSync = append(needSync, code)
+		}
+	}
+	if len(needSync) == 0 {
+		logger.SugaredLogger.Infof("candidate features: all %d stocks already have feature data", len(codes))
+		return
+	}
+	logger.SugaredLogger.Infof("candidate features: auto-syncing %d/%d stocks", len(needSync), len(codes))
+	go func() {
+		service := NewFeatureSyncService()
+		for _, code := range needSync {
+			if err := service.SyncStockFeatures(code, 365); err != nil {
+				logger.SugaredLogger.Warnf("candidate features: sync %s failed: %v", code, err)
+			}
+		}
+		logger.SugaredLogger.Infof("candidate features: auto-sync completed for %d stocks", len(needSync))
+	}()
 }

@@ -25,6 +25,17 @@ type KLineFeatures struct {
 	FundFlow20   float64
 	ChangeRate5  float64
 	ChangeRate20 float64
+	// Advanced features
+	Volatility20  float64 // 20-day historical volatility
+	Volatility60  float64 // 60-day historical volatility
+	AmihudRatio   float64 // Amihud illiquidity (|return| / turnover)
+	TurnoverRate  float64 // 换手率（从日K数据传入）
+	Beta          float64 // 60-day beta against benchmark
+	HighLowRatio  float64 // (high-low)/close — intraday range
+	OBV           float64 // On-Balance Volume cumulative
+	RSI14         float64 // 14-day RSI
+	ChangeRate60  float64 // 60-day change rate
+	ChangeRate120 float64 // 120-day change rate
 }
 
 // CalculateFeaturesFromKLines expects bars ordered from oldest to newest.
@@ -39,14 +50,13 @@ func CalculateFeaturesFromKLines(klines []data.KLineData) *KLineFeatures {
 	lows := make([]float64, 0, len(klines))
 	for _, k := range klines {
 		closePrice, _ := strconv.ParseFloat(k.Close, 64)
-		openPrice, _ := strconv.ParseFloat(k.Open, 64)
 		highPrice, _ := strconv.ParseFloat(k.High, 64)
 		lowPrice, _ := strconv.ParseFloat(k.Low, 64)
 		volume, _ := strconv.ParseFloat(k.Volume, 64)
 		closes = append(closes, closePrice)
 		volumes = append(volumes, volume)
-		highs = append(highs, math.Max(openPrice, math.Max(highPrice, lowPrice)))
-		lows = append(lows, math.Min(openPrice, math.Min(highPrice, lowPrice)))
+		highs = append(highs, highPrice)
+		lows = append(lows, lowPrice)
 	}
 
 	bollMid, bollUpper, bollLower := bollBands(closes, 20)
@@ -66,6 +76,15 @@ func CalculateFeaturesFromKLines(klines []data.KLineData) *KLineFeatures {
 		ATR:          atr(highs, lows, closes, 14),
 		ChangeRate5:  changeRate(closes, 5),
 		ChangeRate20: changeRate(closes, 20),
+		// Advanced features
+		Volatility20:  historicalVolatility(closes, 20),
+		Volatility60:  historicalVolatility(closes, 60),
+		AmihudRatio:   amihudIlliquidity(closes, volumes),
+		HighLowRatio:  highLowRatio(highs, lows, closes),
+		OBV:           obv(closes, volumes),
+		RSI14:         rsi(closes, 14),
+		ChangeRate60:  changeRate(closes, 60),
+		ChangeRate120: changeRate(closes, 120),
 	}
 }
 
@@ -242,4 +261,68 @@ func highest(values []float64) float64 {
 		}
 	}
 	return maximum
+}
+
+// historicalVolatility 计算对数收益率的历史波动率（年化）
+func historicalVolatility(closes []float64, period int) float64 {
+	if period <= 0 || len(closes) <= period {
+		return 0
+	}
+	start := len(closes) - period
+	logReturns := make([]float64, 0, period)
+	for i := start; i < len(closes); i++ {
+		if closes[i-1] <= 0 {
+			return 0
+		}
+		logReturns = append(logReturns, math.Log(closes[i]/closes[i-1]))
+	}
+	return stdDev(logReturns) * math.Sqrt(252)
+}
+
+// amihudIlliquidity 计算 Amihud 非流动性比率：|return| / (price * volume)
+// 取最近 5 日均值，值越大代表流动性越差
+func amihudIlliquidity(closes, volumes []float64) float64 {
+	if len(closes) < 6 || len(volumes) != len(closes) {
+		return 0
+	}
+	period := 5
+	start := len(closes) - period
+	sum := 0.0
+	for i := start; i < len(closes); i++ {
+		if closes[i-1] <= 0 || volumes[i] <= 0 {
+			continue
+		}
+		ret := math.Abs(closes[i]/closes[i-1] - 1)
+		denom := closes[i] * volumes[i] * 100
+		if denom <= 0 {
+			continue
+		}
+		sum += ret / denom * 1e10 // 缩放避免数值太小
+	}
+	return sum / float64(period)
+}
+
+// highLowRatio 计算日内振幅比：(high - low) / close
+func highLowRatio(highs, lows, closes []float64) float64 {
+	last := len(closes) - 1
+	if last < 0 || closes[last] <= 0 {
+		return 0
+	}
+	return (highs[last] - lows[last]) / closes[last]
+}
+
+// obv 计算 On-Balance Volume（累积量）
+func obv(closes, volumes []float64) float64 {
+	if len(closes) < 2 || len(volumes) != len(closes) {
+		return 0
+	}
+	cumulative := 0.0
+	for i := 1; i < len(closes); i++ {
+		if closes[i] > closes[i-1] {
+			cumulative += volumes[i]
+		} else if closes[i] < closes[i-1] {
+			cumulative -= volumes[i]
+		}
+	}
+	return cumulative
 }

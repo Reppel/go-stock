@@ -3707,6 +3707,104 @@ func (a *App) DeleteCandidateSnapshot(snapshotID uint) string {
 	return "候选快照已归档，来源事实与候选项已保留用于审计"
 }
 
+// BatchDeleteCandidateSnapshots 批量删除候选快照
+func (a *App) BatchDeleteCandidateSnapshots(snapshotIDs []uint) map[string]any {
+	if db.Dao == nil {
+		return map[string]any{"code": 0, "msg": "数据库未初始化"}
+	}
+	var deleted, skipped int
+	var skipReasons []string
+	for _, id := range snapshotIDs {
+		var sessionCount int64
+		db.Dao.Model(&models.PredictionSession{}).Where("candidate_snapshot_id = ?", id).Count(&sessionCount)
+		if sessionCount > 0 {
+			skipped++
+			skipReasons = append(skipReasons, fmt.Sprintf("快照 #%d 已被预测会话引用", id))
+			continue
+		}
+		if err := backtest.NewCandidatePoolService().DeleteSnapshot(id); err != nil {
+			skipped++
+			skipReasons = append(skipReasons, fmt.Sprintf("快照 #%d: %v", id, err))
+			continue
+		}
+		deleted++
+	}
+	return map[string]any{"code": 1, "deleted": deleted, "skipped": skipped, "reasons": skipReasons}
+}
+
+// DeletePredictionSession 删除预测会话及其关联的假设、决策、信号、交易记录
+func (a *App) DeletePredictionSession(sessionID uint) string {
+	if err := backtest.NewPredictionService().DeleteSession(sessionID); err != nil {
+		return "删除预测会话失败: " + err.Error()
+	}
+	return "预测会话已删除"
+}
+
+// BatchDeletePredictionSessions 批量删除预测会话
+func (a *App) BatchDeletePredictionSessions(sessionIDs []uint) map[string]any {
+	var deleted, skipped int
+	var skipReasons []string
+	for _, id := range sessionIDs {
+		if err := backtest.NewPredictionService().DeleteSession(id); err != nil {
+			skipped++
+			skipReasons = append(skipReasons, fmt.Sprintf("会话 #%d: %v", id, err))
+			continue
+		}
+		deleted++
+	}
+	return map[string]any{"code": 1, "deleted": deleted, "skipped": skipped, "reasons": skipReasons}
+}
+
+// DeletePredictionHypothesis 删除单个预测假设及其关联数据
+func (a *App) DeletePredictionHypothesis(hypothesisID uint) string {
+	if err := backtest.NewPredictionService().DeleteHypothesis(hypothesisID); err != nil {
+		return "删除策略失败: " + err.Error()
+	}
+	return "策略已删除"
+}
+
+// BatchDeletePredictionHypotheses 批量删除预测假设
+func (a *App) BatchDeletePredictionHypotheses(hypothesisIDs []uint) map[string]any {
+	var deleted, skipped int
+	var skipReasons []string
+	for _, id := range hypothesisIDs {
+		if err := backtest.NewPredictionService().DeleteHypothesis(id); err != nil {
+			skipped++
+			skipReasons = append(skipReasons, fmt.Sprintf("策略 #%d: %v", id, err))
+			continue
+		}
+		deleted++
+	}
+	return map[string]any{"code": 1, "deleted": deleted, "skipped": skipped, "reasons": skipReasons}
+}
+
+// DeletePredictionAlert 删除单个预警日志
+func (a *App) DeletePredictionAlert(alertID uint) string {
+	if err := db.Dao.Where("id = ?", alertID).Delete(&models.PredictionAlertLog{}).Error; err != nil {
+		return "删除提醒失败: " + err.Error()
+	}
+	return "提醒已删除"
+}
+
+// BatchDeletePredictionAlerts 批量删除预警日志
+func (a *App) BatchDeletePredictionAlerts(alertIDs []uint) map[string]any {
+	result := db.Dao.Where("id IN ?", alertIDs).Delete(&models.PredictionAlertLog{})
+	return map[string]any{"code": 1, "deleted": result.RowsAffected, "error": result.Error}
+}
+
+// BatchDeleteTradingRecords 批量删除交易记录
+func (a *App) BatchDeleteTradingRecords(ids []uint) map[string]any {
+	var deleted, failed int
+	for _, id := range ids {
+		if err := data.NewStockDataApi().DeleteTradingRecord(id); err != nil {
+			failed++
+		} else {
+			deleted++
+		}
+	}
+	return map[string]any{"code": 1, "deleted": deleted, "failed": failed}
+}
+
 func (a *App) CreatePredictionSessionFromCandidate(snapshotID uint, scene, startDate, endDate string, aiConfigId int) map[string]any {
 	if strings.Contains(scene, "长期") {
 		return map[string]any{"code": 0, "msg": "五源数据缺少点时基本面与估值，长期场景当前仅供观察，不能进入正式量化验证"}

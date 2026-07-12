@@ -409,7 +409,7 @@ func (g *AIGenerator) buildLLMPrompt(scene string, stockScope string, ctx Market
 {
   "schemaVersion": "prediction-rule/v2",
   "registryVersion": "indicator-registry/v2",
-  "featureVersion": "daily_v2_qfq",
+  "featureVersion": "daily_v3_qfq",
   "engineVersion": "quant-engine/v3",
   "name": "策略名称",
   "description": "策略描述",

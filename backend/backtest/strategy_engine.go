@@ -281,6 +281,22 @@ func (e *StrategyEngine) GetIndicatorValue(indicator string, f models.StockFeatu
 		return f.ChangeRate5
 	case "changerate20", "change_rate20":
 		return f.ChangeRate20
+	case "volatility20":
+		return f.Volatility20
+	case "volatility60":
+		return f.Volatility60
+	case "amihudratio", "amihud_ratio":
+		return f.AmihudRatio
+	case "highlowratio", "high_low_ratio":
+		return f.HighLowRatio
+	case "obv":
+		return f.OBV
+	case "rsi14":
+		return f.RSI14
+	case "changerate60", "change_rate60":
+		return f.ChangeRate60
+	case "changerate120", "change_rate120":
+		return f.ChangeRate120
 	case "close":
 		return f.Close
 	case "open":

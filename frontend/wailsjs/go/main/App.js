@@ -58,6 +58,26 @@ export function BatchDeleteAllStockInfo(arg1) {
   return window['go']['main']['App']['BatchDeleteAllStockInfo'](arg1);
 }
 
+export function BatchDeleteCandidateSnapshots(arg1) {
+  return window['go']['main']['App']['BatchDeleteCandidateSnapshots'](arg1);
+}
+
+export function BatchDeletePredictionAlerts(arg1) {
+  return window['go']['main']['App']['BatchDeletePredictionAlerts'](arg1);
+}
+
+export function BatchDeletePredictionHypotheses(arg1) {
+  return window['go']['main']['App']['BatchDeletePredictionHypotheses'](arg1);
+}
+
+export function BatchDeletePredictionSessions(arg1) {
+  return window['go']['main']['App']['BatchDeletePredictionSessions'](arg1);
+}
+
+export function BatchDeleteTradingRecords(arg1) {
+  return window['go']['main']['App']['BatchDeleteTradingRecords'](arg1);
+}
+
 export function CalculateNextRunTime(arg1) {
   return window['go']['main']['App']['CalculateNextRunTime'](arg1);
 }
@@ -144,6 +164,18 @@ export function DeleteCustomStrategy(arg1) {
 
 export function DeleteMCPServer(arg1) {
   return window['go']['main']['App']['DeleteMCPServer'](arg1);
+}
+
+export function DeletePredictionAlert(arg1) {
+  return window['go']['main']['App']['DeletePredictionAlert'](arg1);
+}
+
+export function DeletePredictionHypothesis(arg1) {
+  return window['go']['main']['App']['DeletePredictionHypothesis'](arg1);
+}
+
+export function DeletePredictionSession(arg1) {
+  return window['go']['main']['App']['DeletePredictionSession'](arg1);
 }
 
 export function DeletePromptTemplate(arg1) {

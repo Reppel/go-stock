@@ -7,7 +7,7 @@ import (
 
 const (
 	CurrentStrategyVersion   = "strategy_v4"
-	CurrentFeatureVersion    = "daily_v2_qfq"
+	CurrentFeatureVersion    = "daily_v3_qfq"
 	CurrentEngineVersion     = "quant-engine/v3"
 	CurrentVerdictVersion    = "quant-verdict/v2"
 	MinPoolStrategySamples   = 30

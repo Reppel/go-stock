@@ -4,6 +4,7 @@ import * as echarts from 'echarts'
 import {
   NButton,
   NCard,
+  NCheckbox,
   NForm,
   NFormItem,
   NSelect,
@@ -41,6 +42,7 @@ import {
   SettingsOutline,
   SyncOutline,
   TimeOutline,
+  TrashOutline,
   TrendingUpOutline,
   WalletOutline
 } from '@vicons/ionicons5'
@@ -72,7 +74,16 @@ import {
   GenerateCandidateSnapshot,
   GetCandidateSnapshot,
   GetCandidateSnapshots,
-  CreatePredictionSessionFromCandidate
+  CreatePredictionSessionFromCandidate,
+  BatchDeleteCandidateSnapshots,
+    DeletePredictionSession,
+  BatchDeletePredictionSessions,
+  DeletePredictionHypothesis,
+  BatchDeletePredictionHypotheses,
+  DeletePredictionAlert,
+  BatchDeletePredictionAlerts,
+  DeleteTradingRecord,
+  BatchDeleteTradingRecords
 } from '../../wailsjs/go/main/App'
 
 const scenes = [
@@ -95,6 +106,7 @@ const candidateSourceOptions = [
 
 const scopes = [
   {label: '我的自选股', value: '自选股'},
+  {label: '五源推荐股票', value: 'snapshot_all'},
   {label: '指定股票', value: 'stock'},
 ]
 
@@ -181,6 +193,7 @@ const decisionDrawerVisible = ref(false)
 const sessionViewMode = ref('history')
 const candidateLoading = ref(false)
 const candidateSnapshots = ref([])
+const candidateFormExpanded = ref(false)
 const candidateDetails = ref(null)
 const candidateDrawerVisible = ref(false)
 const selectedCandidate = ref(null)
@@ -217,7 +230,7 @@ onMounted(async () => {
   ])
   await openLatestSession()
   await loadCandidateSnapshots()
-})
+  })
 
 onUnmounted(() => {
   if (syncTimer) clearInterval(syncTimer)
@@ -346,6 +359,55 @@ function candidateRisks(row) {
   return jsonValue(row?.risksJson, [])
 }
 
+const selectedCandidateItems = ref([])
+
+function toggleAllCandidateItems(checked) {
+  if (checked) {
+    selectedCandidateItems.value = (candidateDetails.value?.items || []).map(r => r.stockCode)
+  } else {
+    selectedCandidateItems.value = []
+  }
+}
+
+function toggleCandidateItemSelect(row) {
+  const idx = selectedCandidateItems.value.indexOf(row.stockCode)
+  if (idx >= 0) {
+    selectedCandidateItems.value.splice(idx, 1)
+  } else {
+    selectedCandidateItems.value.push(row.stockCode)
+  }
+}
+
+async function sendSelectedCandidatesToQuantify() {
+  if (!selectedCandidateItems.value.length) {
+    message.warning('请先勾选候选股票')
+    return
+  }
+  const scope = 'stock_' + selectedCandidateItems.value.join(',')
+  try {
+    const res = await CreatePredictionSession(
+      form.value.scene,
+      scope,
+      formatDate(form.value.startDate),
+      formatDate(form.value.endDate),
+      form.value.aiConfigId || 0
+    )
+    if (res.code === 1) {
+      sessionResult.value = res.data
+      sessionViewMode.value = 'current'
+      activeWorkspace.value = 'analysis'
+      activeAnalysisView.value = 'decisions'
+      await Promise.all([loadMyHypotheses(), loadPredictionSessions(), loadPredictionAlerts()])
+      message.success('已送入量化验证')
+      selectedCandidateItems.value = []
+    } else {
+      message.error(res.msg || '送入量化失败')
+    }
+  } catch (err) {
+    message.error('送入量化失败: ' + (err?.message || String(err)))
+  }
+}
+
 function sourceLabel(source) {
   return candidateSourceOptions.find(item => item.value === source)?.label || source
 }
@@ -380,21 +442,23 @@ async function openCandidateSnapshot(snapshotId) {
 }
 
 async function generateCandidates(overrides = {}) {
-  if (!(overrides.sources || candidateForm.value.sources || []).length) {
+  const merged = typeof overrides === 'boolean'
+    ? {...candidateForm.value, force: overrides}
+    : {...candidateForm.value, ...overrides}
+  if (!(merged.sources || []).length) {
     message.warning('至少选择一个候选来源')
     return
   }
   candidateLoading.value = true
   activeWorkspace.value = 'opportunities'
   try {
-    const request = {...candidateForm.value, ...overrides}
-    if (request.sources.length !== 1 || request.sources[0] !== request.sourceItemSource) {
-      request.sourceItems = []
+    if (merged.sources.length !== 1 || merged.sources[0] !== merged.sourceItemSource) {
+      merged.sourceItems = []
     }
-    request.minimumSources = request.sourceMode === 'intersection'
-        ? request.sources.length
-        : Math.min(Number(request.minimumSources || 1), request.sources.length)
-    const res = await GenerateCandidateSnapshot(request)
+    merged.minimumSources = merged.sourceMode === 'intersection'
+        ? merged.sources.length
+        : Math.min(Number(merged.minimumSources || 1), merged.sources.length)
+    const res = await GenerateCandidateSnapshot(merged)
     if (!res || res.code !== 1) throw new Error(res?.msg || '生成候选池失败')
     candidateDetails.value = res.data
     await loadCandidateSnapshots()
@@ -708,6 +772,79 @@ async function scanPredictionAlerts() {
     message.error('扫描提醒失败: ' + (err?.message || String(err)))
   } finally {
     alertLoading.value = false
+  }
+}
+
+
+async function batchDeleteCandidateSnapshots() {
+  const ids = (candidateSnapshots.value || []).map(row => row.id)
+  if (!ids.length) return
+  try {
+    const res = await BatchDeleteCandidateSnapshots(ids)
+    message.success(`已删除 ${res.deleted || 0} 个快照${res.skipped ? '，跳过 ' + res.skipped + ' 个' : ''}`)
+    await loadCandidateSnapshots()
+    candidateDetails.value = null
+  } catch (err) {
+    message.error('批量删除候选快照失败: ' + (err?.message || String(err)))
+  }
+}
+
+async function deletePredictionSessionRow(session) {
+  try {
+    const res = await DeletePredictionSession(session.id)
+    if (String(res).includes('失败')) {
+      message.error(res)
+    } else {
+      message.success(res)
+      await loadPredictionSessions()
+      if (sessionResult.value?.session?.id === session.id) {
+        sessionResult.value = null
+      }
+    }
+  } catch (err) {
+    message.error('删除预测会话失败: ' + (err?.message || String(err)))
+  }
+}
+
+async function deletePredictionHypothesisRow(hypothesis) {
+  try {
+    const res = await DeletePredictionHypothesis(hypothesis.id)
+    if (String(res).includes('失败')) {
+      message.error(res)
+    } else {
+      message.success(res)
+      await loadMyHypotheses()
+    }
+  } catch (err) {
+    message.error('删除策略失败: ' + (err?.message || String(err)))
+  }
+}
+
+async function deletePredictionAlertRow(alert) {
+  try {
+    const res = await DeletePredictionAlert(alert.id)
+    if (String(res).includes('失败')) {
+      message.error(res)
+    } else {
+      message.success(res)
+      await loadPredictionAlerts()
+    }
+  } catch (err) {
+    message.error('删除提醒失败: ' + (err?.message || String(err)))
+  }
+}
+
+async function deleteTradeRecordRow(record) {
+  try {
+    const id = recordField(record, 'ID', 'id')
+    if (!id) return
+    await DeleteTradingRecord(Number(id))
+    message.success('交易流水已删除')
+    if (selectedPosition.value) {
+      tradeRecords.value = await GetTradingRecordsByStock(selectedPosition.value.stockCode) || []
+    }
+  } catch (err) {
+    message.error('删除交易流水失败: ' + (err?.message || String(err)))
   }
 }
 
@@ -1380,9 +1517,16 @@ function formatDate(ts) {
         </template>
         <section class="workspace-page opportunity-page">
           <n-alert type="info" :show-icon="false">
-            五类页面数据先形成带来源、版本和可用时间的候选快照；这里的 WATCH 不是买入指令，进入量化验证后才会执行回测、裁决和前向模拟。
+            五类页面数据先形成候选快照；推荐股票可独立删除，历史快照为审计记录不可删除。
           </n-alert>
-          <n-card size="small" title="五源候选池" class="candidate-command-card">
+
+          <!-- 五源候选池生成面板（折叠） -->
+          <n-card size="small" title="五源候选池生成" class="candidate-command-card" :content-style="candidateFormExpanded ? '' : 'display:none'">
+            <template #header-extra>
+              <n-button text size="small" @click="candidateFormExpanded = !candidateFormExpanded">
+                {{ candidateFormExpanded ? '收起' : '展开' }}
+              </n-button>
+            </template>
             <n-form :model="candidateForm" label-placement="top" :show-feedback="false" class="candidate-form">
               <n-form-item label="投资场景"><n-select v-model:value="candidateForm.scene" :options="candidateScenes"/></n-form-item>
               <n-form-item label="数据来源" class="candidate-source-field">
@@ -1401,13 +1545,25 @@ function formatDate(ts) {
               <n-form-item label="数据日期"><n-input v-model:value="candidateForm.tradeDate" placeholder="YYYY-MM-DD"/></n-form-item>
               <n-form-item label="最多候选"><n-input-number v-model:value="candidateForm.limit" :min="10" :max="500"/></n-form-item>
               <n-form-item class="candidate-generate-action">
-                <n-button type="primary" :loading="candidateLoading" @click="generateCandidates()">生成候选快照</n-button>
+                <n-space>
+                  <n-button type="primary" :loading="candidateLoading" @click="generateCandidates()">生成候选快照</n-button>
+                  <n-button :loading="candidateLoading" @click="generateCandidates(true)">强制重新生成</n-button>
+                </n-space>
               </n-form-item>
             </n-form>
           </n-card>
 
+          <!-- 历史快照 -->
           <div class="candidate-layout">
-            <n-card size="small" title="历史快照" class="candidate-history-card">
+            <n-card size="small" class="candidate-history-card">
+              <template #header>
+                <div class="panel-heading">
+                  <span>历史快照</span>
+                  <n-space size="small">
+                    <n-button size="tiny" quaternary @click="batchDeleteCandidateSnapshots">归档全部</n-button>
+                  </n-space>
+                </div>
+              </template>
               <div class="candidate-history-list" v-if="candidateSnapshots.length">
                 <button v-for="row in candidateSnapshots" :key="row.id" type="button"
                         class="candidate-history-item"
@@ -1428,8 +1584,8 @@ function formatDate(ts) {
                   <span>候选结果</span>
                   <n-space v-if="candidateDetails?.snapshot" align="center" size="small">
                     <n-tag size="small" type="info">覆盖 {{ formatRatio(candidateDetails.snapshot.coverage) }}</n-tag>
-                    <n-button size="small" type="primary" :disabled="candidateForm.scene === '长期配置'" :loading="candidateLoading" @click="validateCandidateSnapshot">
-                      进入量化验证
+                    <n-button size="small" type="primary" :disabled="!selectedCandidateItems.length" @click="sendSelectedCandidatesToQuantify()">
+                      送入量化 ({{ selectedCandidateItems.length }})
                     </n-button>
                   </n-space>
                 </div>
@@ -1446,21 +1602,27 @@ function formatDate(ts) {
                 </n-alert>
                 <div class="table-shell" v-if="candidateDetails?.items?.length">
                   <n-table size="small" :bordered="false" :single-line="false" class="candidate-table">
-                    <thead><tr><th>排名</th><th>股票</th><th>来源</th><th>规则适配分</th><th>最适场景</th><th>候选建议</th><th></th></tr></thead>
+                    <thead><tr><th><n-checkbox :checked="selectedCandidateItems.length === candidateDetails.items.length" @update:checked="toggleAllCandidateItems"/></th><th>排名</th><th>股票</th><th>来源</th><th>短线</th><th>波段</th><th>趋势</th><th></th></tr></thead>
                     <tbody>
-                    <tr v-for="(row, index) in candidateDetails.items" :key="row.id || row.stockCode">
-                      <td>#{{ index + 1 }}</td>
-                      <td><n-text strong>{{ row.stockName || row.stockCode }}</n-text><br><n-text depth="3">{{ row.stockCode }} · {{ row.industry || '-' }}</n-text></td>
-                      <td><n-space size="small"><n-tag v-for="source in candidateSources(row)" :key="source" size="small" :bordered="false">{{ sourceLabel(source) }}</n-tag></n-space></td>
-                      <td><n-text strong v-if="sceneScore(row) >= 0">{{ sceneScore(row).toFixed(1) }}</n-text><n-tag v-else size="small" type="warning">数据不足</n-tag></td>
-                      <td>{{ row.bestScene || '-' }}</td>
-                      <td><n-tag size="small" type="info">{{ candidateAdvice(row).action || 'WATCH' }}</n-tag><br><n-text depth="3">仅候选</n-text></td>
-                      <td><n-button size="tiny" text type="primary" @click="openCandidateAdvice(row)">依据与风险</n-button></td>
-                    </tr>
+                      <tr v-for="(row, index) in candidateDetails.items" :key="row.id || row.stockCode">
+                        <td><n-checkbox :checked="selectedCandidateItems.includes(row.stockCode)" @update:checked="toggleCandidateItemSelect(row)"/></td>
+                        <td>#{{ index + 1 }}</td>
+                        <td>
+                          <n-text strong>{{ row.stockName || row.stockCode }}</n-text>
+                          <br><n-text depth="3">{{ row.stockCode }} · {{ row.industry || '-' }}</n-text>
+                        </td>
+                        <td>
+                          <n-space size="small"><n-tag v-for="source in candidateSources(row)" :key="source" size="small" :bordered="false">{{ sourceLabel(source) }}</n-tag></n-space>
+                        </td>
+                        <td><n-text :class="{highlight: candidateForm.scene === '短线爆发'}" :depth="candidateForm.scene === '短线爆发' ? undefined : 3">{{ row.shortScore?.toFixed?.(1) ?? '-' }}</n-text></td>
+                        <td><n-text :class="{highlight: candidateForm.scene === '波段反弹'}" :depth="candidateForm.scene === '波段反弹' ? undefined : 3">{{ row.swingScore?.toFixed?.(1) ?? '-' }}</n-text></td>
+                        <td><n-text :class="{highlight: candidateForm.scene === '趋势持有'}" :depth="candidateForm.scene === '趋势持有' ? undefined : 3">{{ row.trendScore?.toFixed?.(1) ?? '-' }}</n-text></td>
+                        <td><n-button size="tiny" text type="primary" @click="openCandidateAdvice(row)">详情</n-button></td>
+                      </tr>
                     </tbody>
                   </n-table>
                 </div>
-                <n-empty v-else description="选择历史快照或生成新的五源候选池"/>
+                <n-empty v-else description="选择历史快照查看候选结果"/>
               </n-spin>
             </n-card>
           </div>
@@ -1498,16 +1660,14 @@ function formatDate(ts) {
               </n-space>
             </n-form-item>
             <n-form-item class="command-actions">
-              <n-space :wrap="false">
-                <n-button @click="syncFeatures" :loading="syncLoading">
-                  <template #icon><n-icon :component="SyncOutline"/></template>
-                  同步数据
-                </n-button>
-                <n-button type="primary" @click="generatePredictions" :loading="loading">
-                  <template #icon><n-icon :component="TrendingUpOutline"/></template>
-                  生成预测
-                </n-button>
-              </n-space>
+              <n-button @click="syncFeatures" :loading="syncLoading" size="small">
+                <template #icon><n-icon :component="SyncOutline"/></template>
+                同步数据
+              </n-button>
+              <n-button type="primary" @click="generatePredictions" :loading="loading" size="small">
+                <template #icon><n-icon :component="TrendingUpOutline"/></template>
+                生成预测
+              </n-button>
             </n-form-item>
           </n-form>
           <section class="data-status-strip">
@@ -1848,7 +2008,11 @@ function formatDate(ts) {
                 <td>{{ s.startDate }} 至 {{ s.endDate }}</td>
                 <td><n-tag size="small" :type="s.status === 'done' ? 'success' : 'warning'">{{ s.status }}</n-tag></td>
                 <td>{{ formatDateTime(s.createdAt) }}</td>
-                <td><n-icon :component="ChevronForwardOutline" size="16"/></td>
+                <td>
+                  <n-button size="tiny" quaternary circle type="error" @click.stop="deletePredictionSessionRow(s)">
+                    <template #icon><n-icon :component="TrashOutline" size="14"/></template>
+                  </n-button>
+                </td>
               </tr>
               </tbody>
             </n-table>
@@ -1918,6 +2082,14 @@ function formatDate(ts) {
                       </template>
                       打开回测分析
                     </n-tooltip>
+                    <n-tooltip trigger="hover">
+                      <template #trigger>
+                        <n-button quaternary circle size="small" type="error" @click="deletePredictionHypothesisRow(h)">
+                          <template #icon><n-icon :component="TrashOutline"/></template>
+                        </n-button>
+                      </template>
+                      删除策略
+                    </n-tooltip>
                   </n-space>
                 </td>
               </tr>
@@ -1971,9 +2143,14 @@ function formatDate(ts) {
                   <td>{{ formatDateTime(row.triggeredAt) }}</td>
                   <td><n-tag size="small" :type="alertStatusType(row.status)">{{ alertStatusText(row.status) }}</n-tag></td>
                   <td>
-                    <n-space v-if="row.status !== 'resolved'" size="small" :wrap="false">
-                      <n-button size="tiny" secondary @click="markAlert(row, 'read')">已读</n-button>
-                      <n-button size="tiny" secondary @click="markAlert(row, 'ignored')">忽略</n-button>
+                    <n-space size="small" :wrap="false">
+                      <template v-if="row.status !== 'resolved'">
+                        <n-button size="tiny" secondary @click="markAlert(row, 'read')">已读</n-button>
+                        <n-button size="tiny" secondary @click="markAlert(row, 'ignored')">忽略</n-button>
+                      </template>
+                      <n-button size="tiny" quaternary circle type="error" @click="deletePredictionAlertRow(row)">
+                        <template #icon><n-icon :component="TrashOutline" size="14"/></template>
+                      </n-button>
                     </n-space>
                   </td>
                 </tr>
@@ -2268,6 +2445,7 @@ function formatDate(ts) {
             <th>金额</th>
             <th>手续费</th>
             <th>原因</th>
+            <th></th>
           </tr>
           </thead>
           <tbody>
@@ -2283,6 +2461,11 @@ function formatDate(ts) {
             <td>{{ formatMoney(recordAmount(record)) }}</td>
             <td>{{ formatMoney(recordField(record, 'Fee', 'fee') || 0) }}</td>
             <td>{{ recordField(record, 'Reason', 'reason') || '-' }}</td>
+            <td>
+              <n-button size="tiny" quaternary circle type="error" @click="deleteTradeRecordRow(record)">
+                <template #icon><n-icon :component="TrashOutline" size="14"/></template>
+              </n-button>
+            </td>
           </tr>
           </tbody>
         </n-table>
@@ -2417,12 +2600,17 @@ function formatDate(ts) {
 }
 
 .command-actions {
+  width: 142px;
   margin-bottom: 0;
-  margin-left: auto;
 }
 
 .command-actions :deep(.n-form-item-blank) {
-  justify-content: flex-end;
+  display: flex;
+  gap: 8px;
+}
+
+.command-actions .n-button {
+  flex: 1;
 }
 
 .date-separator {
@@ -3050,13 +3238,38 @@ function formatDate(ts) {
   vertical-align: middle;
 }
 
+.recommend-tabs {
+  margin-top: 4px;
+}
+
+.recommend-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.recommend-filter {
+  padding: 0 2px;
+}
+
+.recommend-panel .panel-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.recommend-panel .highlight {
+  font-weight: 600;
+  color: #18a058;
+}
+
 @media (max-width: 1180px) {
   .command-field.date-field {
     width: 340px;
   }
 
   .command-actions {
-    margin-left: 0;
+    width: 100%;
   }
 
   .strategy-list {
@@ -3083,12 +3296,11 @@ function formatDate(ts) {
     width: 100%;
   }
 
-  .command-actions,
-  .command-actions :deep(.n-space) {
+  .command-actions {
     width: 100%;
   }
 
-  .command-actions :deep(.n-button) {
+  .command-actions .n-button {
     flex: 1;
   }
 

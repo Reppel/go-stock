@@ -518,9 +518,10 @@ func (receiver StockDataApi) Follow(stockCode string) string {
 	db.Dao.Model(&FollowedStock{}).Where("is_del = ?", 0).Count(&count)
 	//logger.SugaredLogger.Errorf("Follow-count %v", count)
 	// VIP 用户（有效期内）不限制关注数量，非 VIP 用户最多关注 63 只
-	if _, active := EffectiveSponsorVipLevel(); !active && count >= 63 {
-		return "最多只能关注63只股票，升级VIP后不限数量"
-	}
+	// 已移除 VIP 关注数量限制
+	// if _, active := EffectiveSponsorVipLevel(); !active && count >= 63 {
+	// 	return "最多只能关注63只股票，升级VIP后不限数量"
+	// }
 
 	stockCode = strings.ToLower(stockCode)
 

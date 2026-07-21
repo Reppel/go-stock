@@ -289,7 +289,7 @@ func (g *AIGenerator) callLLM(scene string, stockScope string, ctx MarketContext
 	g.lastPrompt = prompt
 	g.lastRawOutput = ""
 
-	llmCtx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	llmCtx, cancel := context.WithTimeout(context.Background(), 7*time.Minute)
 	defer cancel()
 	openAi := data.NewDeepSeekOpenAi(llmCtx, aiConfigId)
 	g.lastModelName = openAi.Model
@@ -320,7 +320,7 @@ func (g *AIGenerator) callLLM(scene string, stockScope string, ctx MarketContext
 
 	var content strings.Builder
 	var streamErr string
-	timeout := time.After(90 * time.Second)
+	timeout := time.After(7 * time.Minute)
 done:
 	for {
 		select {
@@ -456,7 +456,12 @@ func (g *AIGenerator) parseLLMResponse(result, scene string) ([]Hypothesis, erro
 
 	var raw []map[string]any
 	if err := json.Unmarshal([]byte(result), &raw); err != nil {
-		return nil, fmt.Errorf("解析 JSON 失败: %w", err)
+		// LLM 可能返回单个对象而非数组，尝试兜底解析
+		var single map[string]any
+		if err2 := json.Unmarshal([]byte(result), &single); err2 != nil {
+			return nil, fmt.Errorf("解析 JSON 失败（数组和对象均失败）: %w", err)
+		}
+		raw = []map[string]any{single}
 	}
 
 	var hypotheses []Hypothesis

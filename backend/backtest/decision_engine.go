@@ -42,7 +42,7 @@ func (e *DecisionEngine) Build(ctx DecisionContext) models.PredictionDecision {
 		currentPrice = quote.price
 	}
 
-	stockName := f.StockCode
+	stockName := stockNameOrCode(f.StockCode, "")
 	if strings.TrimSpace(holding.name) != "" {
 		stockName = holding.name
 	}

@@ -116,3 +116,4 @@ frontend/package.json.md5
 /build/us.json
 /build-dev.bat
 /build-prod.bat
+.worktrees/
